@@ -1,0 +1,4 @@
+numpy>=1.24
+PySide6>=6.5
+pyqtgraph>=0.13
+python-rtmidi>=1.5

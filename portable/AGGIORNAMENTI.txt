@@ -1,0 +1,152 @@
+SOGNO_CANE - DISTRIBUZIONE E AGGIORNAMENTO AUTOMATICO
+=====================================================
+
+Obiettivo:
+  (A) far SCARICARE l'eseguibile da qualsiasi PC;
+  (B) far AGGIORNARE da solo ogni copia installata, quando il PC e' online.
+
+Come funziona (in breve):
+  - L'app, all'avvio (se c'e' connessione), legge un piccolo file JSON online
+    chiamato "manifest" (version.json) ospitato da te.
+  - Se la versione nel manifest e' piu' recente, scarica il pacchetto nuovo,
+    ne verifica l'impronta SHA-256 e lo "mette in attesa".
+  - Al RIAVVIO successivo, START.bat applica l'aggiornamento (sostituisce la
+    cartella del programma) prima di aprire la finestra. Sicuro: non tocca mai
+    file in uso, e tiene un backup per annullare in caso di errore.
+  - Offline o manifest assente = semplicemente non aggiorna. Nessun crash.
+
+
+-----------------------------------------------------------------------------
+PASSO 0 — UNA VOLTA SOLA: dove l'app va a controllare
+-----------------------------------------------------------------------------
+Apri  sogno_cane\update.py  e imposta la riga:
+
+    DEFAULT_UPDATE_URL = "https://.../version.json"
+
+con l'indirizzo dove pubblicherai il manifest (vedi sotto, GitHub Releases).
+Cosi' OGNI copia distribuita sapra' dove cercare gli aggiornamenti.
+
+In alternativa, su un singolo PC puoi impostare:
+  - la variabile d'ambiente  SOGNO_CANE_UPDATE_URL, oppure
+  - "update_url" dentro  %USERPROFILE%\.sogno_cane\settings.json
+(prevalgono sull'URL "di fabbrica").
+
+
+-----------------------------------------------------------------------------
+PASSO 1 — HOSTING GRATIS CONSIGLIATO: GitHub Releases
+-----------------------------------------------------------------------------
+GitHub Releases da' link di download stabili e pubblici, gratis.
+
+  1. Crea un account su github.com e un repository (anche privato per il
+     codice, ma la Release con i file deve essere pubblica per il download).
+  2. Per ogni versione crei una "Release" e ci alleghi i file (asset).
+  3. I link degli asset dell'ultima release sono stabili e prevedibili:
+
+       https://github.com/<utente>/<repo>/releases/latest/download/<nomefile>
+
+     Esempi:
+       .../releases/latest/download/version.json            (manifest)
+       .../releases/latest/download/sogno_cane_package.zip   (aggiornamento)
+       .../releases/latest/download/SOGNO_CANE_Windows.zip   (download completo)
+
+  Va bene anche QUALSIASI host che dia URL pubblici diretti (un sito, uno
+  spazio cloud con link diretto, un web server tuo). Serve solo che i tre
+  file siano raggiungibili via HTTP/HTTPS.
+
+
+-----------------------------------------------------------------------------
+INSTALLER CON UN CLICK (consigliato per "scaricare tutto da un altro PC")
+-----------------------------------------------------------------------------
+Il file  SOGNO_CANE_Setup.bat  e' un installer minuscolo (pochi KB): chi lo
+apre con doppio click si scarica da solo l'app completa, attiva
+l'auto-aggiornamento e crea i collegamenti (Desktop + menu Start). E' questo
+il singolo file da distribuire.
+
+  1. Apri SOGNO_CANE_Setup.bat con un editor e imposta in cima:
+        set "MANIFEST_URL=https://github.com/<utente>/<repo>/releases/latest/download/version.json"
+     (lo stesso version.json del PASSO 0/3). Nel version.json deve esserci il
+     campo  "bundle_url"  che punta allo ZIP completo (vedi PASSO 3).
+  2. Distribuisci SOGNO_CANE_Setup.bat: mandalo via email/chat, o caricalo
+     come asset di Release e condividi il link
+        https://github.com/<utente>/<repo>/releases/latest/download/SOGNO_CANE_Setup.bat
+  3. Sull'altro PC: doppio click sul file. Scarica, installa in
+        %LOCALAPPDATA%\SOGNO_CANE , attiva l'auto-update e avvia l'app.
+     (Al primo avvio SmartScreen puo' avvisare: "Ulteriori informazioni" ->
+      "Esegui comunque".)
+
+Il check forzato degli aggiornamenti e' gia' nell'app: pulsante "UPDATES"
+nella barra in alto.
+
+
+-----------------------------------------------------------------------------
+PASSO 2 — (A) RENDERE SCARICABILE L'ESEGUIBILE DA ALTRI PC (zip completo)
+-----------------------------------------------------------------------------
+  1. Prepara la cartella portabile completa "SOGNO_CANE" (quella con dentro
+     "runtime", START.bat, update_apply.py e la cartella del programma in
+     runtime\Lib\site-packages\sogno_cane).
+  2. Comprimila in un unico file ZIP, es.  SOGNO_CANE_Windows.zip
+  3. Caricalo come asset di una Release su GitHub.
+  4. Condividi il link:
+       https://github.com/<utente>/<repo>/releases/latest/download/SOGNO_CANE_Windows.zip
+  5. Chi lo riceve: scarica lo ZIP, estrae TUTTO, doppio click su START.bat.
+     (Al primo avvio puo' comparire SmartScreen: "Ulteriori informazioni" ->
+     "Esegui comunque".)
+
+  COME COSTRUIRE  SOGNO_CANE_Windows.zip  (lo ZIP completo con il runtime):
+    Parti dalla tua cartella portabile esistente "SOGNO_CANE" (quella con
+    dentro "runtime") e:
+      a) sostituisci  runtime\Lib\site-packages\sogno_cane  con la nuova
+         cartella del programma (questa versione);
+      b) copia nella cartella SOGNO_CANE i file aggiornati da "portable\":
+         START.bat, update_apply.py, LEGGIMI.txt (e, se vuoi distribuirlo,
+         SOGNO_CANE_Setup.bat);
+      c) comprimi l'intera cartella SOGNO_CANE in  SOGNO_CANE_Windows.zip .
+    Quello e' il file da caricare come asset di Release.
+
+
+-----------------------------------------------------------------------------
+PASSO 3 — (B) PUBBLICARE UN AGGIORNAMENTO (lo prendono tutti da soli)
+-----------------------------------------------------------------------------
+  1. Aumenta la versione in  sogno_cane\__init__.py  (es. 0.2.0 -> 0.3.0).
+  2. Dalla cartella del progetto esegui lo strumento di build:
+
+       python tools\build_release.py ^
+         --url https://github.com/<utente>/<repo>/releases/latest/download/sogno_cane_package.zip ^
+         --bundle-url https://github.com/<utente>/<repo>/releases/latest/download/SOGNO_CANE_Windows.zip ^
+         --bundle dist\SOGNO_CANE_Windows.zip ^
+         --notes "Cosa e' cambiato" ^
+         --out dist
+
+     Produce in  dist\ :
+       - sogno_cane_package.zip   (il programma aggiornato, per l'auto-update)
+       - version.json             (manifest: versione, url, sha256, bundle_url,
+                                    bundle_sha256 — usato anche dall'installer)
+
+     ( --bundle e' opzionale: serve solo a registrare lo sha256 dello zip
+       completo cosi' l'installer ne verifica l'integrita'. Se ometti
+       --bundle-url, l'installer non potra' scaricare il bundle completo. )
+
+  3. Crea una nuova Release su GitHub e allega ENTRAMBI i file
+     (version.json e sogno_cane_package.zip) come asset.
+     (Opzionale: allega anche SOGNO_CANE_Windows.zip aggiornato per i nuovi
+      download completi.)
+
+  4. Fatto. Le copie gia' installate, alla prima apertura con connessione,
+     vedranno la nuova versione, la scaricheranno e la applicheranno al
+     riavvio successivo. L'utente vede un avviso "Update pronto".
+
+
+-----------------------------------------------------------------------------
+COMPORTAMENTO E IMPOSTAZIONI
+-----------------------------------------------------------------------------
+  - Pulsante "UPDATES" (barra in alto) = controlla subito a mano.
+  - Auto-controllo all'avvio: attivo di default. Per disattivarlo, in
+    %USERPROFILE%\.sogno_cane\settings.json  metti  "auto_update": false
+  - L'aggiornamento scaricato sta in  %USERPROFILE%\.sogno_cane\updates\
+    e viene applicato da update_apply.py al lancio di START.bat.
+  - Verifica integrita': se l'SHA-256 non corrisponde, il file viene
+    rifiutato (niente installazioni corrotte o manomesse). Usa URL HTTPS.
+
+NOTA SICUREZZA: l'app si aggiorna SOLO dall'URL che imposti tu. Tieni il
+controllo di quell'host (e usa HTTPS): chi puo' modificarlo puo' distribuire
+codice a tutte le installazioni.

@@ -1,0 +1,28 @@
+COME AGGIORNARE UNA BUILD PORTABILE ESISTENTE ALLA v0.2.0
+=========================================================
+
+Se hai gia' la cartella portabile "SOGNO_CANE" con dentro "runtime":
+
+1. Chiudi SOGNO_CANE se e' aperto.
+
+2. Vai in:
+       SOGNO_CANE\runtime\Lib\site-packages\
+
+3. RINOMINA la vecchia cartella "sogno_cane" in "sogno_cane_OLD"
+   (cosi' puoi tornare indietro se serve).
+
+4. COPIA qui la nuova cartella "sogno_cane" (quella fornita con questo
+   aggiornamento, accanto a questo file: ..\sogno_cane).
+
+5. (Consigliato) Sostituisci anche START.bat nella cartella SOGNO_CANE e
+   aggiungi SELFTEST.bat e LEGGIMI.txt da questa cartella "portable".
+
+6. Avvia con START.bat. Per verificare che tutto funzioni, esegui
+   SELFTEST.bat: deve stampare "selftest OK".
+
+7. Se tutto va bene, puoi cancellare "sogno_cane_OLD".
+
+NOTA: non serve toccare la cartella "runtime" (Python e librerie restano
+invariati: il nuovo codice usa solo numpy, PySide6, pyqtgraph e python-rtmidi,
+gia' presenti). Il lettore EDF/BDF e' incluso nel codice e non richiede
+librerie aggiuntive.

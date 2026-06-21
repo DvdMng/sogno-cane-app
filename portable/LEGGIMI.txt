@@ -1,0 +1,61 @@
+SOGNO_CANE - build portabile Windows (v0.2.0)
+=============================================
+
+ISTRUZIONI:
+
+1. Estrai TUTTO il contenuto in una cartella qualsiasi. NON aprire il
+   programma direttamente dallo zip: prima estrai.
+
+2. Doppio click su START.bat. La finestra principale si apre dopo qualche
+   secondo.
+
+3. Al primo avvio Windows potrebbe mostrare SmartScreen ("Windows ha protetto
+   il PC"). Clicca "Ulteriori informazioni" -> "Esegui comunque". Solo la
+   prima volta.
+
+NUOVE FUNZIONI (v0.2.0):
+
+  * REGISTRAZIONE: premi "● REC" sotto un dispositivo per registrare il
+    segnale in arrivo. Quando fermi, la registrazione finisce nell'ARCHIVIO.
+
+  * ARCHIVIO (scheda "ARCHIVE"): rinomina, TAGLIA un intervallo (CUT),
+    ESPORTA in CSV, ELIMINA, oppure RICARICA una registrazione per
+    riprodurla su uomo o cane.
+
+  * CARICA FILE ("LOAD FILE"): riproduci un file EEG (.edf .bdf .csv .tsv
+    .txt .npz .npy) attraverso la stessa traduzione in MIDI.
+
+  * TRASPORTO: START ALL / STOP ALL / PANIC (spegne tutte le note).
+
+  * La musica ora e' molto piu' sparsa e musicale: regola intervallo, durata
+    e soglia di cambiamento nelle schede di mappatura.
+
+PER INVIARE MIDI A UNA DAW (Ableton ecc.):
+
+  Serve un driver MIDI virtuale. Consigliato loopMIDI (gratis):
+     https://www.tobias-erichsen.de/software/loopmidi.html
+  Installalo, crea una porta col "+", poi in SOGNO_CANE premi REFRESH e
+  CONNECT scegliendo quella porta.
+
+REQUISITI:
+
+  - Windows 10/11 a 64 bit. Tutto il resto (Python e librerie) e' incluso
+    nella cartella "runtime". Non installare nulla.
+
+SE NON SI APRE:
+
+  - Doppio click su SELFTEST.bat: esegue la pipeline senza finestra e stampa
+    l'errore esatto. In alternativa, da Prompt dei comandi:
+        runtime\python.exe -m sogno_cane --selftest
+  - In caso di errore della finestra, il dettaglio viene anche scritto in
+        %USERPROFILE%\.sogno_cane\last_error.log
+
+DOVE FINISCONO REGISTRAZIONI E IMPOSTAZIONI:
+
+  Nella cartella   %USERPROFILE%\.sogno_cane
+  (registrazioni in ...\recordings, impostazioni in settings.json)
+
+DISINSTALLAZIONE:
+
+  Cancella la cartella SOGNO_CANE. Le registrazioni restano in
+  %USERPROFILE%\.sogno_cane finche' non le elimini a mano.

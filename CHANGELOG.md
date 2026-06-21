@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0
+- **Canali MIDI 1–16 come Ableton**: l'interfaccia (schede di mapping e monitor
+  MIDI) ora mostra i canali **1–16** invece di 0–15, per coincidere con la
+  numerazione delle DAW. L'instradamento sul filo MIDI è invariato e corretto
+  (verificato: il canale impostato è quello effettivamente trasmesso). Risolve
+  la discrepanza per cui i canali in Ableton sembravano sfasati di 1.
+
 ## 0.3.0
 - **Configurazioni complete salvabili**: dalla scheda MAPPING, "SAVE CONFIG" /
   "LOAD CONFIG" salvano e ricaricano l'intero setup di entrambi i dispositivi

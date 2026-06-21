@@ -157,8 +157,8 @@ class MainWindow(QMainWindow):
         # Config save/load bar.
         bar = QHBoxLayout()
         hint = QLabel(
-            "Configure how each device's EEG drives MIDI. Save the whole "
-            "setup (both devices) as a named configuration."
+            "Configure how each device's EEG drives MIDI. MIDI channels are "
+            "1–16 (same as Ableton). Save the whole setup as a configuration."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #7F7298; padding: 4px 2px;")

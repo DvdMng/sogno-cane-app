@@ -34,6 +34,33 @@ def test_main_window_builds(app, tmp_path, monkeypatch):
     win.close()
 
 
+def test_midi_channels_displayed_one_based(app):
+    """Channel spinboxes show 1-16 (Ableton style) but store 0-15 on the wire."""
+    from PySide6.QtWidgets import QSpinBox
+    from sogno_cane.midi.presets import rich_vocabulary_preset
+    from sogno_cane.ui.mapping_panel import MappingPanel
+
+    b = rich_vocabulary_preset()
+    panel = MappingPanel(b, "T")
+    boxes = [
+        sb for sb in panel.findChildren(QSpinBox)
+        if sb.minimum() == 1 and sb.maximum() == 16
+    ]
+    assert boxes, "channel spinboxes must be 1..16"
+    # per-channel band voices live on internal channels 0..7 -> shown as 1..8
+    displayed = {sb.value() for sb in boxes}
+    assert {v.midi_channel + 1 for v in b.per_channel_band.voices} <= displayed
+    # Setting a box to displayed value 11 must store internal channel 10.
+    boxes[0].setValue(11)
+    stored = (
+        [v.midi_channel for v in b.per_channel_band.voices]
+        + [v.midi_channel for v in b.per_channel_cc.voices]
+        + [b.threshold.channel, b.coherence.channel, b.markov.channel]
+        + [r.midi_channel for r in b.clips.rules]
+    )
+    assert 10 in stored, "display 11 must map to internal channel 10"
+
+
 def test_app_icon_present(app):
     import os
     from sogno_cane.ui.theme import app_icon, icon_path

@@ -214,10 +214,10 @@ class MappingPanel(QWidget):
             grid.addWidget(root_cb, 1, 2)
 
             midi_sb = QSpinBox()
-            midi_sb.setRange(0, 15)
-            midi_sb.setValue(int(getattr(voice, "midi_channel", 0)))
+            midi_sb.setRange(1, 16)   # 1-16 like Ableton (stored 0-15)
+            midi_sb.setValue(int(getattr(voice, "midi_channel", 0)) + 1)
             midi_sb.valueChanged.connect(
-                lambda v, vc=voice: self._set_safe(vc, "midi_channel", v)
+                lambda v, vc=voice: self._set_safe(vc, "midi_channel", v - 1)
             )
             grid.addWidget(QLabel("midi ch"), 1, 3)
             grid.addWidget(midi_sb, 1, 4)
@@ -275,10 +275,10 @@ class MappingPanel(QWidget):
             grid.addWidget(cc_sb, 0, 4)
 
             midi_sb = QSpinBox()
-            midi_sb.setRange(0, 15)
-            midi_sb.setValue(int(getattr(v, "midi_channel", 12)))
+            midi_sb.setRange(1, 16)   # 1-16 like Ableton (stored 0-15)
+            midi_sb.setValue(int(getattr(v, "midi_channel", 12)) + 1)
             midi_sb.valueChanged.connect(
-                lambda val, vc=v: self._set_safe(vc, "midi_channel", val)
+                lambda val, vc=v: self._set_safe(vc, "midi_channel", val - 1)
             )
             grid.addWidget(QLabel("midi ch"), 1, 1)
             grid.addWidget(midi_sb, 1, 2)
@@ -335,9 +335,9 @@ class MappingPanel(QWidget):
         layout.addRow("threshold", thr)
 
         ch = QSpinBox()
-        ch.setRange(0, 15)
-        ch.setValue(int(getattr(s, "channel", 9)))
-        ch.valueChanged.connect(lambda v: self._set_safe(s, "channel", v))
+        ch.setRange(1, 16)   # 1-16 like Ableton (stored 0-15)
+        ch.setValue(int(getattr(s, "channel", 9)) + 1)
+        ch.valueChanged.connect(lambda v: self._set_safe(s, "channel", v - 1))
         layout.addRow("midi channel", ch)
         return w
 
@@ -369,9 +369,9 @@ class MappingPanel(QWidget):
         layout.addRow("cc #", cc)
 
         ch = QSpinBox()
-        ch.setRange(0, 15)
-        ch.setValue(int(getattr(s, "channel", 10)))
-        ch.valueChanged.connect(lambda v: self._set_safe(s, "channel", v))
+        ch.setRange(1, 16)   # 1-16 like Ableton (stored 0-15)
+        ch.setValue(int(getattr(s, "channel", 10)) + 1)
+        ch.valueChanged.connect(lambda v: self._set_safe(s, "channel", v - 1))
         layout.addRow("midi channel", ch)
 
         sm = QDoubleSpinBox()
@@ -412,9 +412,9 @@ class MappingPanel(QWidget):
         layout.addRow("root", root_cb)
 
         ch = QSpinBox()
-        ch.setRange(0, 15)
-        ch.setValue(int(getattr(s, "channel", 8)))
-        ch.valueChanged.connect(lambda v: self._set_safe(s, "channel", v))
+        ch.setRange(1, 16)   # 1-16 like Ableton (stored 0-15)
+        ch.setValue(int(getattr(s, "channel", 8)) + 1)
+        ch.valueChanged.connect(lambda v: self._set_safe(s, "channel", v - 1))
         layout.addRow("midi channel", ch)
 
         density = QSpinBox()
@@ -496,10 +496,10 @@ class MappingPanel(QWidget):
             grid.addWidget(note_sb, 1, 2)
 
             mc = QSpinBox()
-            mc.setRange(0, 15)
-            mc.setValue(int(getattr(rule, "midi_channel", 11)))
+            mc.setRange(1, 16)   # 1-16 like Ableton (stored 0-15)
+            mc.setValue(int(getattr(rule, "midi_channel", 11)) + 1)
             mc.valueChanged.connect(
-                lambda v, r=rule: self._set_safe(r, "midi_channel", v)
+                lambda v, r=rule: self._set_safe(r, "midi_channel", v - 1)
             )
             grid.addWidget(QLabel("midi ch"), 1, 3)
             grid.addWidget(mc, 1, 4)

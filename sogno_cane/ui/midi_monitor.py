@@ -43,26 +43,28 @@ class MidiMonitor(QWidget):
         self._list.scrollToBottom()
 
     def _add_line(self, ev: MappingEvent) -> None:
+        # Display channels 1-16 to match the DAW (Ableton); the wire stays 0-15.
+        ch = ev.channel + 1
         if ev.kind == "note_on":
             text = (
-                f"NOTE_ON   ch{ev.channel:02d}  "
+                f"NOTE_ON   ch{ch:02d}  "
                 f"n={ev.note:3d}  v={ev.velocity:3d}"
             )
             color = FG_LIME
         elif ev.kind == "note_off":
-            text = f"NOTE_OFF  ch{ev.channel:02d}  n={ev.note:3d}"
+            text = f"NOTE_OFF  ch{ch:02d}  n={ev.note:3d}"
             color = FG_MAGENTA
         elif ev.kind == "cc":
             text = (
-                f"CC        ch{ev.channel:02d}  "
+                f"CC        ch{ch:02d}  "
                 f"cc={ev.control:3d}  v={ev.value:3d}"
             )
             color = FG_CYAN
         elif ev.kind == "pitchbend":
-            text = f"PITCHBEND ch{ev.channel:02d}  p={ev.pitch:+d}"
+            text = f"PITCHBEND ch{ch:02d}  p={ev.pitch:+d}"
             color = FG_YELLOW
         else:
-            text = f"{ev.kind.upper():9s} ch{ev.channel:02d}"
+            text = f"{ev.kind.upper():9s} ch{ch:02d}"
             color = FG_LIME
         item = QListWidgetItem(text)
         item.setForeground(_qcolor(color))

@@ -5,8 +5,12 @@ import threading
 
 import numpy as np
 from PySide6.QtCore import Qt, QTimer, Signal
+import os
+
 from PySide6.QtWidgets import (
+    QFileDialog,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -17,7 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sogno_cane import __version__, update as updater
+from sogno_cane import __version__, config as appconfig, update as updater
 from sogno_cane.eeg.bands import compute_band_powers
 from sogno_cane.eeg.profiles import DOG_PROFILE, HUMAN_PROFILE
 from sogno_cane.eeg.unicorn_packet import UnicornPacket
@@ -27,7 +31,7 @@ from sogno_cane.ui.archive_panel import ArchivePanel
 from sogno_cane.ui.device_panel import DevicePanel
 from sogno_cane.ui.mapping_panel import MappingPanel
 from sogno_cane.ui.midi_monitor import MidiMonitor
-from sogno_cane.ui.theme import BackgroundWidget, ChromeTitle
+from sogno_cane.ui.theme import BackgroundWidget, ChromeTitle, app_icon
 
 
 class MainWindow(QMainWindow):
@@ -40,6 +44,10 @@ class MainWindow(QMainWindow):
     def __init__(self, archive: Archive | None = None) -> None:
         super().__init__()
         self.setWindowTitle("SOGNO_CANE")
+        try:
+            self.setWindowIcon(app_icon())
+        except Exception:
+            pass
         self._settings = Settings.load()
         w = int(self._settings.get("window", "w", default=1600))
         h = int(self._settings.get("window", "h", default=1020))
@@ -145,18 +153,37 @@ class MainWindow(QMainWindow):
         wrap = QWidget()
         v = QVBoxLayout(wrap)
         v.setContentsMargins(0, 0, 0, 0)
+
+        # Config save/load bar.
+        bar = QHBoxLayout()
         hint = QLabel(
-            "Configure how each device's EEG drives MIDI. The interval / "
-            "hold / change-threshold controls set how sparse each voice is."
+            "Configure how each device's EEG drives MIDI. Save the whole "
+            "setup (both devices) as a named configuration."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #7F7298; padding: 4px 2px;")
-        v.addWidget(hint)
-        inner = QTabWidget()
-        inner.addTab(MappingPanel(self._human.bundle, "HUMAN MAPPING"), "HUMAN")
-        inner.addTab(MappingPanel(self._dog.bundle, "DOG MAPPING"), "DOG")
-        v.addWidget(inner, 1)
+        bar.addWidget(hint, 1)
+        save_btn = QPushButton("SAVE CONFIG")
+        save_btn.setToolTip("Save the complete configuration (both devices).")
+        save_btn.clicked.connect(self._save_config)
+        bar.addWidget(save_btn)
+        load_btn = QPushButton("LOAD CONFIG")
+        load_btn.setToolTip("Load a saved configuration.")
+        load_btn.clicked.connect(self._load_config)
+        bar.addWidget(load_btn)
+        v.addLayout(bar)
+
+        self._mapping_tabs = QTabWidget()
+        self._rebuild_mapping_tabs()
+        v.addWidget(self._mapping_tabs, 1)
         return wrap
+
+    def _rebuild_mapping_tabs(self) -> None:
+        """(Re)build the per-device mapping editors bound to the live bundles."""
+        tabs = self._mapping_tabs
+        tabs.clear()
+        tabs.addTab(MappingPanel(self._human.bundle, "HUMAN MAPPING"), "HUMAN")
+        tabs.addTab(MappingPanel(self._dog.bundle, "DOG MAPPING"), "DOG")
 
     def _build_transport(self) -> QHBoxLayout:
         bar = QHBoxLayout()
@@ -309,6 +336,72 @@ class MainWindow(QMainWindow):
 
     def _on_update_failed(self, msg: str) -> None:
         self.statusBar().showMessage(f"Update failed: {msg}", 8000)
+
+    # ------------------------------------------------------------------ #
+    # Configurations (save / load the complete mapping setup)            #
+    # ------------------------------------------------------------------ #
+
+    def _collect_devices(self) -> dict:
+        return {
+            key: {
+                "profile": dev.profile.name,
+                "port": dev.current_port_name(),
+                "loop": dev._loop_cb.isChecked(),
+                "bundle": dev.bundle,
+            }
+            for key, dev in (("human", self._human), ("dog", self._dog))
+        }
+
+    def _save_config(self) -> None:
+        name, ok = QInputDialog.getText(
+            self, "Save configuration", "Configuration name:",
+            text="my_config",
+        )
+        if not ok or not name.strip():
+            return
+        safe = "".join(
+            c if (c.isalnum() or c in " -_") else "-" for c in name.strip()
+        ).strip() or "config"
+        path = os.path.join(appconfig.configs_dir(), f"{safe}.json")
+        try:
+            cfg = appconfig.build_config(self._collect_devices())
+            appconfig.save_config(path, cfg)
+            self.statusBar().showMessage(f"Saved configuration: {path}", 6000)
+        except Exception as e:
+            QMessageBox.warning(self, "Save failed", str(e))
+
+    def _load_config(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load configuration",
+            appconfig.configs_dir(),
+            "SOGNO_CANE config (*.json);;All files (*)",
+        )
+        if not path:
+            return
+        try:
+            data = appconfig.load_config(path)
+        except Exception as e:
+            QMessageBox.warning(self, "Load failed", str(e))
+            return
+        devs = data.get("devices", {})
+        for key, dev in (("human", self._human), ("dog", self._dog)):
+            dd = devs.get(key)
+            if not isinstance(dd, dict):
+                continue
+            appconfig.apply_bundle_config(dev.bundle, dd.get("bundle", {}))
+            prof = dd.get("profile")
+            if prof:
+                dev._profile_cb.setCurrentText(prof)
+            loop = dd.get("loop")
+            if loop is not None:
+                dev._loop_cb.setChecked(bool(loop))
+            port = dd.get("port")
+            if port:
+                dev.set_port_name(port)
+        self._rebuild_mapping_tabs()
+        self.statusBar().showMessage(
+            f"Loaded configuration: {os.path.basename(path)}", 6000
+        )
 
     # ------------------------------------------------------------------ #
     # Spectrum                                                           #

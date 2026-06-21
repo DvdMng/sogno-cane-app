@@ -6,6 +6,8 @@ ornament is the gradient SOGNO_CANE title.
 """
 from __future__ import annotations
 
+import os
+
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (
     QBrush,
@@ -13,6 +15,7 @@ from PySide6.QtGui import (
     QFont,
     QFontDatabase,
     QFontMetricsF,
+    QIcon,
     QLinearGradient,
     QPainter,
     QPainterPath,
@@ -406,8 +409,26 @@ def _first_available_family(candidates: list[str]) -> str | None:
     return None
 
 
+def icon_path() -> str:
+    """Absolute path to the app icon shipped in the package assets."""
+    return os.path.join(
+        os.path.dirname(os.path.dirname(__file__)), "assets", "icon.ico"
+    )
+
+
+def app_icon() -> QIcon:
+    p = icon_path()
+    return QIcon(p) if os.path.exists(p) else QIcon()
+
+
 def apply_theme(app: QApplication) -> None:
     app.setStyleSheet(QSS)
+    try:
+        ic = app_icon()
+        if not ic.isNull():
+            app.setWindowIcon(ic)
+    except Exception:
+        pass
 
     pal = QPalette()
     pal.setColor(QPalette.ColorRole.Window, QColor(BG_DEEP))

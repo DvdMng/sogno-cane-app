@@ -1,6 +1,15 @@
 # Changelog
 
-## Non rilasciato
+## 0.3.0
+- **Configurazioni complete salvabili**: dalla scheda MAPPING, "SAVE CONFIG" /
+  "LOAD CONFIG" salvano e ricaricano l'intero setup di entrambi i dispositivi
+  (profili, porte, loop e tutti i parametri di mapping) in
+  `~/.sogno_cane/configs/`. (`sogno_cane/config.py`)
+- **Icona dell'app**: logo onda EEG → nota, mostrato nella finestra/barra e
+  usato dai collegamenti creati dall'installer. (`sogno_cane/assets/icon.ico`,
+  generata da `tools/make_icon.py`)
+
+## Non rilasciato (incluso in 0.3.0)
 - **Aggiornamento automatico online** (`sogno_cane/update.py` +
   `portable/update_apply.py`): l'app controlla un manifest JSON, scarica la
   nuova versione con verifica SHA-256 e la applica al riavvio (con backup/

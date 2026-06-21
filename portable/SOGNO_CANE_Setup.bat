@@ -91,8 +91,9 @@ $settings['auto_update'] = $true
 [System.IO.File]::WriteAllText($settingsPath, ($settings | ConvertTo-Json -Depth 8))
 Write-Host 'Auto-aggiornamento attivato.'
 
-# Collegamenti su Desktop e nel menu Start.
+# Collegamenti su Desktop e nel menu Start (con icona dell'app).
 if (-not $env:SOGNO_CANE_SETUP_NOSHORTCUT) {
+    $iconPath = Join-Path $appDir 'runtime\Lib\site-packages\sogno_cane\assets\icon.ico'
     $shell = New-Object -ComObject WScript.Shell
     $targets = @(
         [Environment]::GetFolderPath('Desktop'),
@@ -104,6 +105,7 @@ if (-not $env:SOGNO_CANE_SETUP_NOSHORTCUT) {
             $lnk.TargetPath = $start.FullName
             $lnk.WorkingDirectory = $appDir
             $lnk.Description = 'SOGNO_CANE - EEG to MIDI'
+            if (Test-Path $iconPath) { $lnk.IconLocation = "$iconPath,0" }
             $lnk.Save()
         } catch {}
     }

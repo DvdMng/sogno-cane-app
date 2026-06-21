@@ -34,6 +34,35 @@ def test_main_window_builds(app, tmp_path, monkeypatch):
     win.close()
 
 
+def test_app_icon_present(app):
+    import os
+    from sogno_cane.ui.theme import app_icon, icon_path
+    assert os.path.exists(icon_path()), "icon.ico must ship in assets"
+    assert not app_icon().isNull()
+
+
+def test_config_save_load_via_window(app, tmp_path, monkeypatch):
+    monkeypatch.setenv("SOGNO_CANE_HOME", str(tmp_path))
+    from sogno_cane import config as appconfig
+    from sogno_cane.io.archive import Archive
+    from sogno_cane.ui.main_window import MainWindow
+
+    win = MainWindow(archive=Archive(root=str(tmp_path / "rec")))
+    # Mutate a value, save, mutate again, then load and confirm restore.
+    win._human.bundle.markov.scale = "lydian"
+    cfg = appconfig.build_config(win._collect_devices())
+    p = tmp_path / "configs" / "t.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    appconfig.save_config(str(p), cfg)
+    win._human.bundle.markov.scale = "blues"
+    appconfig.apply_bundle_config(
+        win._human.bundle, appconfig.load_config(str(p))["devices"]["human"]["bundle"]
+    )
+    win._rebuild_mapping_tabs()
+    assert win._human.bundle.markov.scale == "lydian"
+    win.close()
+
+
 def test_record_and_archive_flow(app, tmp_path, monkeypatch):
     monkeypatch.setenv("SOGNO_CANE_HOME", str(tmp_path))
     from PySide6.QtCore import QEventLoop, QTimer

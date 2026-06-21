@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sogno_cane"
-version = "0.2.0"
+version = "0.3.0"
 description = "EEG -> MIDI bridge and simulator for human + dog (Unicorn Hybrid Black)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -25,6 +25,9 @@ sogno-cane = "sogno_cane.__main__:main"
 
 [tool.setuptools.packages.find]
 include = ["sogno_cane*"]
+
+[tool.setuptools.package-data]
+sogno_cane = ["assets/*.ico", "assets/*.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

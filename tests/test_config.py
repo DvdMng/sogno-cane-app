@@ -80,3 +80,59 @@ def test_configs_dir_created(tmp_path, monkeypatch):
     d = appconfig.configs_dir()
     import os
     assert os.path.isdir(d)
+
+
+# A frozen configuration as written by v0.3.0. Channels are stored 0-based and
+# must still load (and route to the same wire channels) in later versions.
+_LEGACY_0_3_0_CONFIG = {
+    "config_version": 1,
+    "app_version": "0.3.0",
+    "devices": {
+        "human": {
+            "profile": "HUMAN", "port": "loopMIDI Port", "loop": True,
+            "bundle": {
+                "per_channel_band": {
+                    "enabled": True,
+                    "voices": [
+                        {"eeg_channel": 0, "midi_channel": 7, "band": "beta",
+                         "scale": "dorian", "root": "C",
+                         "min_interval_seconds": 3.7},
+                    ],
+                },
+                "per_channel_cc": {
+                    "voices": [
+                        {"eeg_channel": 0, "midi_channel": 5, "cc_number": 88,
+                         "band": "alpha"},
+                    ],
+                },
+                "markov": {"channel": 6, "scale": "lydian"},
+                "threshold": {"channel": 9, "threshold_uv2": 70.0},
+                "coherence": {"channel": 10},
+                "clips": {
+                    "rules": [
+                        {"eeg_channel": 0, "band": "theta", "midi_note": 36,
+                         "midi_channel": 15},
+                    ],
+                },
+            },
+        },
+    },
+}
+
+
+def test_loads_legacy_0_3_0_config():
+    """A config saved by v0.3.0 must apply unchanged (channels stay 0-based)."""
+    b = rich_vocabulary_preset()
+    appconfig.apply_bundle_config(
+        b, _LEGACY_0_3_0_CONFIG["devices"]["human"]["bundle"]
+    )
+    assert b.per_channel_band.voices[0].midi_channel == 7      # wire ch 7
+    assert b.per_channel_band.voices[0].scale == "dorian"
+    assert b.per_channel_band.voices[0].min_interval_seconds == 3.7
+    assert b.per_channel_cc.voices[0].midi_channel == 5
+    assert b.per_channel_cc.voices[0].cc_number == 88
+    assert b.markov.channel == 6
+    assert b.markov.scale == "lydian"
+    assert b.threshold.channel == 9
+    assert b.coherence.channel == 10
+    assert b.clips.rules[0].midi_channel == 15

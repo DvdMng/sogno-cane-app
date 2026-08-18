@@ -71,10 +71,17 @@ def test_min_interval_is_respected():
 
 
 def test_shutdown_flushes_note_offs():
+    """Every note_on is eventually released.
+
+    Legato notes (duration == 0) must be released by the strategy itself
+    (change of pitch or shutdown). Gated notes (duration > 0) are released
+    by the RealtimeEngine's wall-clock scheduler instead, so at this level
+    the guarantee is that they carry a positive duration.
+    """
     v = PerChannelVoice(
         eeg_channel=0, midi_channel=0, band="alpha",
         min_interval_seconds=0.0, change_threshold_norm=0.0,
-        min_duration_seconds=0.0,
+        min_duration_seconds=0.0, note_length_seconds=0.0,   # legato
     )
     strat = PerChannelBandStrategy(voices=[v])
     eng = MappingEngine(MappingConfig(sample_rate_hz=250))
@@ -87,8 +94,32 @@ def test_shutdown_flushes_note_offs():
             off += e.kind == "note_off"
     for e in eng.shutdown():
         off += e.kind == "note_off"
-    # Every note that turned on is eventually turned off.
+    # Every legato note that turned on is eventually turned off.
     assert off >= on - 1 and on > 0
+
+
+def test_gated_notes_carry_duration_instead_of_note_off():
+    """With a gate set, the strategy emits no note_off of its own: every
+    note_on carries the duration for the engine scheduler."""
+    v = PerChannelVoice(
+        eeg_channel=0, midi_channel=0, band="alpha",
+        min_interval_seconds=0.0, change_threshold_norm=0.0,
+        min_duration_seconds=0.0, note_length_seconds=0.015,
+    )
+    strat = PerChannelBandStrategy(voices=[v])
+    eng = MappingEngine(MappingConfig(sample_rate_hz=250))
+    eng.add_strategy(strat)
+    sim = EEGSimulator(profile=HUMAN_PROFILE, seed=1)
+    on = off = 0
+    for _ in range(60):
+        for e in eng.process_packet(sim.next_packet()):
+            if e.kind == "note_on":
+                on += 1
+                assert e.duration == 0.015
+            off += e.kind == "note_off"
+    for e in eng.shutdown():
+        off += e.kind == "note_off"
+    assert on > 0 and off == 0
 
 
 def test_threshold_trigger_balanced_on_off():

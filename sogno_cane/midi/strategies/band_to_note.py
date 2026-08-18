@@ -65,11 +65,16 @@ class BandToNoteStrategy:
     min_interval_seconds: float = 1.0
     min_duration_seconds: float = 0.4
     change_threshold_norm: float = 0.12
+    # Fixed note length (gate) in seconds; 0 = hold until the pitch changes
+    # (legato). >0 = the engine sends note_off after exactly this long.
+    note_length_seconds: float = 0.015
     channel: int = 0
     name: str = "BandToNote"
     enabled: bool = True
 
     _last_note: int | None = field(default=None, init=False, repr=False)
+    # True if the last note_on was gated (engine owns its release).
+    _gated_last: bool = field(default=False, init=False, repr=False)
     _gate: NoteGate = field(default_factory=NoteGate, init=False, repr=False)
     _norm: AdaptiveNorm = field(
         default_factory=AdaptiveNorm, init=False, repr=False
@@ -112,14 +117,17 @@ class BandToNoteStrategy:
             if self._last_note is not None and self._gate.may_release(
                 t, min_hold=self.min_duration_seconds
             ):
-                ev = MappingEvent(
-                    kind="note_off",
-                    channel=self.channel,
-                    note=self._last_note,
-                )
+                out: list[MappingEvent] = []
+                if not self._gated_last:
+                    out.append(MappingEvent(
+                        kind="note_off",
+                        channel=self.channel,
+                        note=self._last_note,
+                    ))
                 self._last_note = None
+                self._gated_last = False
                 self._gate.commit_off()
-                return [ev]
+                return out
             return []
 
         new_note = quantize_to_scale(norm, scale_notes)
@@ -143,7 +151,8 @@ class BandToNoteStrategy:
                 allowed = False
             if not allowed:
                 return events
-            if self._last_note is not None:
+            gate_len = max(0.0, self.note_length_seconds)
+            if self._last_note is not None and not self._gated_last:
                 events.append(MappingEvent(
                     kind="note_off", channel=self.channel, note=self._last_note,
                 ))
@@ -152,8 +161,10 @@ class BandToNoteStrategy:
                 channel=self.channel,
                 note=new_note,
                 velocity=velocity,
+                duration=gate_len,
             ))
             self._last_note = new_note
+            self._gated_last = gate_len > 0.0
             self._gate.commit_on(t, norm)
         else:
             if not self._gate.may_change(
@@ -162,7 +173,8 @@ class BandToNoteStrategy:
                 change_threshold=0.0,
             ):
                 return events
-            if self._last_note is not None:
+            gate_len = max(0.0, self.note_length_seconds)
+            if self._last_note is not None and not self._gated_last:
                 events.append(MappingEvent(
                     kind="note_off", channel=self.channel, note=self._last_note,
                 ))
@@ -171,17 +183,22 @@ class BandToNoteStrategy:
                 channel=self.channel,
                 note=new_note,
                 velocity=velocity,
+                duration=gate_len,
             ))
             self._last_note = new_note
+            self._gated_last = gate_len > 0.0
             self._gate.commit_on(t, norm)
         return events
 
     def shutdown(self) -> list[MappingEvent]:
         if self._last_note is None:
             return []
-        ev = MappingEvent(
-            kind="note_off", channel=self.channel, note=self._last_note,
-        )
+        events: list[MappingEvent] = []
+        if not self._gated_last:
+            events.append(MappingEvent(
+                kind="note_off", channel=self.channel, note=self._last_note,
+            ))
         self._last_note = None
+        self._gated_last = False
         self._gate.commit_off()
-        return [ev]
+        return events

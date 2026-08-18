@@ -30,6 +30,34 @@ from sogno_cane.midi.scales import NOTE_NAME_TO_PC, SCALES
 _BANDS = ["delta", "theta", "alpha", "beta", "gamma"]
 
 
+def _note_length_spinbox(current_seconds: float) -> QDoubleSpinBox:
+    """Build the shared "note length" control (milliseconds).
+
+    0 shows as "HOLD (legato)" — the note is held until the strategy itself
+    releases it. Any other value is a fixed gate: the engine sends the
+    note_off after exactly that long (15 ms default = short trigger that
+    lets DAW envelopes attack + release freely).
+    """
+    sb = QDoubleSpinBox()
+    sb.setRange(0.0, 5000.0)
+    sb.setDecimals(0)
+    sb.setSingleStep(5.0)
+    sb.setSuffix(" ms")
+    sb.setSpecialValueText("HOLD (legato)")
+    sb.setValue(round(max(0.0, float(current_seconds)) * 1000.0))
+    sb.setToolTip(
+        "Fixed MIDI note length in milliseconds (gate).\n"
+        "Short values (e.g. 15 ms) fire trigger notes so synth envelopes\n"
+        "can modulate freely. Set to 0 = HOLD to keep notes sounding until\n"
+        "the voice changes pitch (legato)."
+    )
+    return sb
+
+
+def _note_length_seconds(sb: QDoubleSpinBox) -> float:
+    return max(0.0, float(sb.value())) / 1000.0
+
+
 def _safe_tab(builder, label: str) -> QWidget:
     """Run a tab builder, return a placeholder QWidget if it raises."""
     try:
@@ -123,6 +151,9 @@ class MappingPanel(QWidget):
         first_threshold = getattr(
             voices_list[0], "change_threshold_norm", 0.18
         ) if voices_list else 0.18
+        first_note_len = getattr(
+            voices_list[0], "note_length_seconds", 0.015
+        ) if voices_list else 0.015
 
         sb_interval = QDoubleSpinBox()
         sb_interval.setRange(0.0, 60.0)
@@ -171,6 +202,15 @@ class MappingPanel(QWidget):
         sb_thresh.valueChanged.connect(_apply_thresh)
         pgrid.addWidget(QLabel("change threshold"), 1, 0)
         pgrid.addWidget(sb_thresh, 1, 1)
+
+        sb_note_len = _note_length_spinbox(first_note_len)
+        def _apply_note_len(_v):
+            secs = _note_length_seconds(sb_note_len)
+            for vc in voices_list:
+                self._set_safe(vc, "note_length_seconds", secs)
+        sb_note_len.valueChanged.connect(_apply_note_len)
+        pgrid.addWidget(QLabel("note length"), 1, 2)
+        pgrid.addWidget(sb_note_len, 1, 3)
 
         layout.addWidget(pacing)
 
@@ -339,6 +379,14 @@ class MappingPanel(QWidget):
         ch.setValue(int(getattr(s, "channel", 9)) + 1)
         ch.valueChanged.connect(lambda v: self._set_safe(s, "channel", v - 1))
         layout.addRow("midi channel", ch)
+
+        nl = _note_length_spinbox(getattr(s, "note_length_seconds", 0.015))
+        nl.valueChanged.connect(
+            lambda _v, sb=nl: self._set_safe(
+                s, "note_length_seconds", _note_length_seconds(sb)
+            )
+        )
+        layout.addRow("note length", nl)
         return w
 
     def _build_coherence_tab(self) -> QWidget:
@@ -438,6 +486,14 @@ class MappingPanel(QWidget):
             lambda v: self._set_safe(s, "min_interval_seconds", float(v))
         )
         layout.addRow("min interval", mk_interval)
+
+        nl = _note_length_spinbox(getattr(s, "note_length_seconds", 0.015))
+        nl.valueChanged.connect(
+            lambda _v, sb=nl: self._set_safe(
+                s, "note_length_seconds", _note_length_seconds(sb)
+            )
+        )
+        layout.addRow("note length", nl)
         return w
 
     def _build_clip_tab(self) -> QWidget:

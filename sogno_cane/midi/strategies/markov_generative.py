@@ -41,6 +41,9 @@ class MarkovGenerativeStrategy:
     spread_band: str = "alpha"
     max_notes_per_window: int = 4
     min_interval_seconds: float = 2.5
+    # Fixed note length (gate) in seconds; 0 = hold each phrase until the
+    # next one starts (legato). >0 = engine releases after exactly this long.
+    note_length_seconds: float = 0.015
     channel: int = 3
     name: str = "MarkovGenerative"
     enabled: bool = True
@@ -92,6 +95,7 @@ class MarkovGenerativeStrategy:
 
         n_notes = 1 + int(round(energy * (self.max_notes_per_window - 1)))
         velocity = max(1, min(127, int(40 + energy * 80)))
+        gate_len = max(0.0, self.note_length_seconds)
         phrase_notes: set[int] = set()
         for _ in range(n_notes):
             idx = self._next_index(len(scale_notes), darkness, spread)
@@ -108,8 +112,12 @@ class MarkovGenerativeStrategy:
                 channel=self.channel,
                 note=note,
                 velocity=velocity,
+                duration=gate_len,
             ))
-            self._held.append(note)
+            # Gated notes are released by the engine; only legato notes
+            # are held until the next phrase.
+            if gate_len == 0.0:
+                self._held.append(note)
         self._last_phrase_t = t
         return events
 

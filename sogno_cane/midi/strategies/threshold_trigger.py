@@ -30,6 +30,10 @@ class ThresholdTriggerStrategy:
     notes: tuple[int, ...] = (60, 64, 67, 72)  # C major chord by default
     sequence_mode: str = "cycle"  # "cycle" or "random"
     min_interval_seconds: float = 0.25
+    # Fixed note length (gate) in seconds; 0 = hold while the band power
+    # stays above the release threshold (old behaviour). >0 = the engine
+    # releases the note after exactly this long.
+    note_length_seconds: float = 0.015
     channel: int = 1
     name: str = "ThresholdTrigger"
     enabled: bool = True
@@ -37,6 +41,8 @@ class ThresholdTriggerStrategy:
 
     _is_active: bool = field(default=False, init=False, repr=False)
     _active_note: int | None = field(default=None, init=False, repr=False)
+    # True if the active note was gated (engine owns its release).
+    _gated_last: bool = field(default=False, init=False, repr=False)
     _cycle_index: int = field(default=0, init=False, repr=False)
     _last_trigger_t: float = field(default=-1.0e9, init=False, repr=False)
     _rng: np.random.Generator = field(
@@ -103,24 +109,28 @@ class ThresholdTriggerStrategy:
                 note = int(self.notes[self._cycle_index % len(self.notes)])
                 self._cycle_index += 1
             velocity = self._velocity_for(mean_pow)
+            gate_len = max(0.0, self.note_length_seconds)
             events.append(MappingEvent(
                 kind="note_on",
                 channel=self.channel,
                 note=note,
                 velocity=velocity,
+                duration=gate_len,
             ))
             self._active_note = note
+            self._gated_last = gate_len > 0.0
             self._is_active = True
             self._last_trigger_t = t
 
         elif self._is_active and mean_pow <= release:
-            if self._active_note is not None:
+            if self._active_note is not None and not self._gated_last:
                 events.append(MappingEvent(
                     kind="note_off",
                     channel=self.channel,
                     note=self._active_note,
                 ))
             self._active_note = None
+            self._gated_last = False
             self._is_active = False
 
         return events
@@ -138,9 +148,12 @@ class ThresholdTriggerStrategy:
     def shutdown(self) -> list[MappingEvent]:
         if self._active_note is None:
             return []
-        ev = MappingEvent(
-            kind="note_off", channel=self.channel, note=self._active_note,
-        )
+        events: list[MappingEvent] = []
+        if not self._gated_last:
+            events.append(MappingEvent(
+                kind="note_off", channel=self.channel, note=self._active_note,
+            ))
         self._active_note = None
+        self._gated_last = False
         self._is_active = False
-        return [ev]
+        return events

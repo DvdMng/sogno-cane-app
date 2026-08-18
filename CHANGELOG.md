@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.5.0
+- **Durata delle note (gate) finalmente controllabile** — fix del feedback
+  "la nota MIDI resta lunga ~2 secondi e blocca gli inviluppi". Prima il
+  note_off partiva solo al *prossimo* evento (cambio di nota o fine frase):
+  con gli intervalli di pacing di default una nota restava aperta 1.5–2.5 s,
+  e con la soglia di cambiamento poteva restare aperta indefinitamente
+  (suono continuo, inviluppi del synth bloccati).
+- Nuovo controllo **"note length"** (in millisecondi) nelle schede
+  NOTES / CH, MARKOV ed EVENTS: default **15 ms** — la nota diventa un
+  trigger breve e gli inviluppi di Ableton attaccano/rilasciano liberamente.
+  Impostando **0 = HOLD (legato)** si ritrova il comportamento precedente
+  (nota tenuta fino al cambio di altezza).
+- Il note_off temporizzato è inviato da uno **scheduler dedicato con
+  precisione al millisecondo** (`NoteOffScheduler` in `core/engine.py`),
+  perché il ciclo di analisi a 100 ms è troppo grossolano per note da 15 ms.
+  Le note pendenti vengono rilasciate a STOP / fine file (niente note appese).
+- Il parametro è salvato/caricato con le configurazioni (SAVE/LOAD CONFIG)
+  ed è retrocompatibile: le config 0.3/0.4 caricano col default 15 ms.
+- Robustezza (da review): un re-trigger della stessa nota con gate lungo non
+  viene più troncato dal note_off precedente (supersessione nello scheduler);
+  lo scheduler sopravvive a stop/start del motore; nessun thread/memoria
+  trapelato a fine riproduzione file; contatore eventi thread-safe.
+
 ## 0.4.0
 - **Canali MIDI 1–16 come Ableton**: l'interfaccia (schede di mapping e monitor
   MIDI) ora mostra i canali **1–16** invece di 0–15, per coincidere con la

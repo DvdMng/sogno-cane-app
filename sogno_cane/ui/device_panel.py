@@ -418,8 +418,14 @@ class DevicePanel(QWidget):
         self._set_status("STOPPED", color=FG_YELLOW)
 
     def _on_source_finished(self) -> None:
-        # The engine already flushed held notes on exhaustion; send a
+        # The engine already flushed held notes on exhaustion; stop() also
+        # parks its note-off scheduler thread so nothing leaks, then send a
         # belt-and-suspenders all-notes-off in case a strategy held state.
+        if self._engine is not None:
+            try:
+                self._engine.stop()
+            except Exception:
+                pass
         try:
             self._midi.all_notes_off()
         except Exception:

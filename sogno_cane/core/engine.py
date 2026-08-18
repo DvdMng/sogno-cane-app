@@ -11,6 +11,8 @@ re-uses this engine.
 """
 from __future__ import annotations
 
+import heapq
+import itertools
 import threading
 import time
 from typing import Callable, Optional
@@ -24,6 +26,110 @@ from sogno_cane.eeg.simulator import (
 from sogno_cane.eeg.unicorn_packet import UnicornPacket
 from sogno_cane.midi.mapper import MappingConfig, MappingEngine, MappingEvent
 from sogno_cane.midi.output import MidiOutput
+
+
+class NoteOffScheduler:
+    """Send timed note_off events with millisecond precision.
+
+    Strategies run on the 100 ms analysis hop, far too coarse for the short
+    "trigger" notes (~15 ms) needed to drive DAW envelopes. When a note_on
+    carries a ``duration``, the engine hands the matching note_off to this
+    scheduler, which runs its own daemon thread on the wall clock.
+
+    The worker thread is started lazily by :meth:`schedule` whenever no live
+    worker exists, so idle engines (and unit tests) cost nothing — and a
+    scheduler stopped by :meth:`stop` transparently revives if new work
+    arrives (RealtimeEngine supports start() after stop()).
+    """
+
+    def __init__(self, send: Callable[[MappingEvent], None]) -> None:
+        self._send = send
+        # Heap of (due_monotonic, seq, channel, note).
+        self._heap: list[tuple[float, int, int, int]] = []
+        self._seq = itertools.count()
+        self._cond = threading.Condition()
+        self._thread: Optional[threading.Thread] = None
+        self._stopped = False
+        # Set by the worker (under the lock) the moment it decides to exit;
+        # tested by schedule() so a new worker is spawned exactly when the
+        # old one is gone or irrevocably on its way out.
+        self._worker_exited = True
+
+    def schedule(self, delay_seconds: float, channel: int, note: int) -> None:
+        due = time.monotonic() + max(0.001, float(delay_seconds))
+        with self._cond:
+            # Revive after stop(): RealtimeEngine supports start() after
+            # stop() (and stop() is also used to flush at source exhaustion),
+            # so a stopped scheduler must accept new work again — silently
+            # dropping it would leave the note stuck (the strategies do not
+            # emit their own note_off for gated notes).
+            if self._stopped:
+                self._stopped = False
+            # Supersede any pending release of the SAME (channel, note): a
+            # restrike retriggers the sounding voice, so only the newest
+            # note_off may fire — the stale one would truncate the new note.
+            survivors = [
+                e for e in self._heap
+                if not (e[2] == channel and e[3] == note)
+            ]
+            if len(survivors) != len(self._heap):
+                self._heap = survivors
+                heapq.heapify(self._heap)
+            heapq.heappush(self._heap, (due, next(self._seq), channel, note))
+            if self._worker_exited:
+                self._worker_exited = False
+                self._thread = threading.Thread(
+                    target=self._run, name="SOGNO_CANE-noteoff", daemon=True,
+                )
+                self._thread.start()
+            self._cond.notify()
+
+    def flush(self) -> None:
+        """Send every pending note_off immediately."""
+        with self._cond:
+            pending = [(ch, n) for (_t, _s, ch, n) in self._heap]
+            self._heap.clear()
+        for ch, n in pending:
+            self._emit(ch, n)
+
+    def stop(self, flush: bool = True) -> None:
+        """Stop accepting work; optionally flush what is still pending."""
+        with self._cond:
+            self._stopped = True
+            self._cond.notify()
+        if flush:
+            self.flush()
+
+    # ------------------------------------------------------------------ #
+
+    def _emit(self, channel: int, note: int) -> None:
+        try:
+            self._send(MappingEvent(
+                kind="note_off", channel=channel, note=note,
+            ))
+        except Exception:
+            pass
+
+    def _run(self) -> None:
+        while True:
+            with self._cond:
+                while not self._stopped and (
+                    not self._heap
+                    or self._heap[0][0] > time.monotonic()
+                ):
+                    if self._heap:
+                        timeout = self._heap[0][0] - time.monotonic()
+                        self._cond.wait(timeout=max(0.0005, timeout))
+                    else:
+                        self._cond.wait()
+                if self._stopped:
+                    # Declared under the lock BEFORE releasing it, so
+                    # schedule() knows deterministically to spawn a
+                    # replacement worker.
+                    self._worker_exited = True
+                    return
+                _due, _seq, channel, note = heapq.heappop(self._heap)
+            self._emit(channel, note)
 
 
 class RealtimeEngine:
@@ -84,8 +190,12 @@ class RealtimeEngine:
         self._running = False
         # Slow-down / speed-up factor: 1.0 = realtime; <1 faster; >1 slower.
         self._time_scale: float = 1.0
-        # Live metrics.
+        # Live metrics. _dispatch_event runs on both the engine thread and
+        # the note-off scheduler thread, so the counter needs a lock.
         self._event_count = 0
+        self._count_lock = threading.Lock()
+        # Wall-clock scheduler for gated (fixed-duration) notes.
+        self._noteoff = NoteOffScheduler(self._dispatch_event)
 
     # ------------------------------------------------------------------ #
     # Public accessors                                                   #
@@ -135,15 +245,18 @@ class RealtimeEngine:
         self._thread.start()
 
     def stop(self, timeout: float = 2.0) -> None:
-        if not self._running:
-            return
-        self._stop_event.set()
-        if self._thread is not None:
-            self._thread.join(timeout=timeout)
-        self._running = False
-        # Flush any pending note_off events.
-        for ev in self._mapper.shutdown():
-            self._dispatch_event(ev)
+        if self._running:
+            self._stop_event.set()
+            if self._thread is not None:
+                self._thread.join(timeout=timeout)
+            self._running = False
+            # Flush any pending note_off events.
+            for ev in self._mapper.shutdown():
+                self._dispatch_event(ev)
+        # Always release gated notes, even if the source already exhausted
+        # itself (in that case _running is False but short notes may still
+        # be pending on the wall-clock scheduler).
+        self._noteoff.stop(flush=True)
 
     # ------------------------------------------------------------------ #
     # Loop                                                                #
@@ -170,6 +283,10 @@ class RealtimeEngine:
                         self._dispatch_event(ev)
                 except Exception:
                     pass
+                # stop (not just flush): parks the worker thread so a
+                # finished playback does not leak it. The scheduler revives
+                # automatically if this engine is ever started again.
+                self._noteoff.stop(flush=True)
                 if self._on_finished is not None:
                     try:
                         self._on_finished()
@@ -193,7 +310,8 @@ class RealtimeEngine:
                 next_t = time.monotonic()
 
     def _dispatch_event(self, ev: MappingEvent) -> None:
-        self._event_count += 1
+        with self._count_lock:
+            self._event_count += 1
         if self._on_event is not None:
             try:
                 self._on_event(ev)
@@ -201,6 +319,12 @@ class RealtimeEngine:
                 pass
         if ev.kind == "note_on":
             self._midi.send_note_on(ev.note, ev.velocity, ev.channel)
+            if ev.duration > 0.0:
+                # Gated note: the engine owns the release. Scale with the
+                # playback speed so slowed-down playback stretches notes too.
+                self._noteoff.schedule(
+                    ev.duration * self._time_scale, ev.channel, ev.note,
+                )
         elif ev.kind == "note_off":
             self._midi.send_note_off(ev.note, ev.channel)
         elif ev.kind == "cc":

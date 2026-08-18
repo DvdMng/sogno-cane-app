@@ -38,6 +38,11 @@ class MappingEvent:
 
     ``kind`` is one of ``"note_on"``, ``"note_off"``, ``"cc"``, ``"pitchbend"``.
     Fields irrelevant to the kind are ignored.
+
+    ``duration`` applies to ``note_on`` only: when > 0 the realtime engine
+    schedules the matching ``note_off`` automatically after that many seconds
+    (wall clock, millisecond precision). 0 means "held" — the strategy itself
+    releases the note later (legato behaviour).
     """
 
     kind: str
@@ -47,6 +52,7 @@ class MappingEvent:
     control: int = 0
     value: int = 0
     pitch: int = 0
+    duration: float = 0.0
 
 
 # ---------------------------------------------------------------------- #

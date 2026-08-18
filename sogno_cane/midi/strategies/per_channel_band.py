@@ -53,6 +53,11 @@ class PerChannelVoice:
     min_interval_seconds: float = 1.5
     min_duration_seconds: float = 0.6
     change_threshold_norm: float = 0.18
+    # Fixed note length (gate) in seconds. When > 0 every note_on carries a
+    # duration and the engine sends the note_off after exactly that long
+    # (15 ms default: short trigger that lets DAW envelopes modulate).
+    # 0 = hold the note until the voice changes pitch (legato, old behaviour).
+    note_length_seconds: float = 0.015
     # --- normalisation mode ---
     adaptive: bool = True
     enabled: bool = True
@@ -68,6 +73,12 @@ class PerChannelBandStrategy:
     enabled: bool = True
 
     _last_notes: dict[int, int] = field(
+        default_factory=dict, init=False, repr=False,
+    )
+    # True if the voice's last note_on was gated (carried a duration): the
+    # engine owns its release, so the strategy must not emit a second
+    # note_off for it.
+    _gated: dict[int, bool] = field(
         default_factory=dict, init=False, repr=False,
     )
     _gates: dict[int, NoteGate] = field(
@@ -162,12 +173,14 @@ class PerChannelBandStrategy:
             if prev_note is not None and gate.may_release(
                 t, min_hold=voice.min_duration_seconds
             ):
-                events.append(MappingEvent(
-                    kind="note_off",
-                    channel=voice.midi_channel,
-                    note=prev_note,
-                ))
+                if not self._gated.get(voice.eeg_channel):
+                    events.append(MappingEvent(
+                        kind="note_off",
+                        channel=voice.midi_channel,
+                        note=prev_note,
+                    ))
                 self._last_notes.pop(voice.eeg_channel, None)
+                self._gated.pop(voice.eeg_channel, None)
                 gate.commit_off()
             return events
 
@@ -192,7 +205,10 @@ class PerChannelBandStrategy:
                 allowed = False
             if not allowed:
                 return events
-            if prev_note is not None:
+            gate_len = max(0.0, voice.note_length_seconds)
+            if prev_note is not None and not self._gated.get(
+                voice.eeg_channel
+            ):
                 events.append(MappingEvent(
                     kind="note_off",
                     channel=voice.midi_channel,
@@ -203,8 +219,10 @@ class PerChannelBandStrategy:
                 channel=voice.midi_channel,
                 note=new_note,
                 velocity=velocity,
+                duration=gate_len,
             ))
             self._last_notes[voice.eeg_channel] = new_note
+            self._gated[voice.eeg_channel] = gate_len > 0.0
             gate.commit_on(t, norm)
         else:
             # Retrigger mode, but still rate-limited.
@@ -214,7 +232,10 @@ class PerChannelBandStrategy:
                 change_threshold=0.0,
             ):
                 return events
-            if prev_note is not None:
+            gate_len = max(0.0, voice.note_length_seconds)
+            if prev_note is not None and not self._gated.get(
+                voice.eeg_channel
+            ):
                 events.append(MappingEvent(
                     kind="note_off",
                     channel=voice.midi_channel,
@@ -225,8 +246,10 @@ class PerChannelBandStrategy:
                 channel=voice.midi_channel,
                 note=new_note,
                 velocity=velocity,
+                duration=gate_len,
             ))
             self._last_notes[voice.eeg_channel] = new_note
+            self._gated[voice.eeg_channel] = gate_len > 0.0
             gate.commit_on(t, norm)
         return events
 
@@ -234,7 +257,8 @@ class PerChannelBandStrategy:
         events: list[MappingEvent] = []
         for voice in self.voices:
             note = self._last_notes.pop(voice.eeg_channel, None)
-            if note is not None:
+            gated = self._gated.pop(voice.eeg_channel, False)
+            if note is not None and not gated:
                 events.append(MappingEvent(
                     kind="note_off",
                     channel=voice.midi_channel,

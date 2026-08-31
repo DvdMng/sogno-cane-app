@@ -131,6 +131,10 @@ class PerChannelCCStrategy:
 
         last = self._last_cc.get(key)
         last_t = self._last_t.get(key, -1.0e9)
+        if last_t > ctx.t_seconds:
+            # Clock restarted behind our state (fresh engine re-using this
+            # live strategy object): drop the stale throttle timestamp.
+            last_t = -1.0e9
         if last is not None:
             if abs(cc_val - last) < max(1, voice.min_delta):
                 return []
@@ -144,6 +148,17 @@ class PerChannelCCStrategy:
             control=voice.cc_number,
             value=cc_val,
         )]
+
+    def reset_runtime(self) -> None:
+        """Forget the emission throttles so a fresh engine starts clean.
+
+        Clearing ``_last_cc`` also forces every CC to re-emit its current
+        value promptly after a restart — the DAW immediately hears the live
+        state instead of waiting for the value to drift by ``min_delta``.
+        The smoothing state and AGC calibration survive on purpose.
+        """
+        self._last_cc.clear()
+        self._last_t.clear()
 
     def shutdown(self) -> list[MappingEvent]:
         return []

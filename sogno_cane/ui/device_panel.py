@@ -79,6 +79,10 @@ class DevicePanel(QWidget):
         self._recording = False
         self._last_battery = 100.0
 
+        # MIDI health surfaced by the stats timer.
+        self._midi_stall_shown = False
+        self._known_reconnects = 0
+
         layout = QVBoxLayout(self)
         layout.setSpacing(6)
         layout.setContentsMargins(10, 6, 10, 8)
@@ -513,6 +517,11 @@ class DevicePanel(QWidget):
     def _update_stats(self) -> None:
         ev = self._engine.event_count if self._engine else 0
         parts = [f"battery {self._last_battery:.0f}%", f"midi events {ev}"]
+        if self._midi.is_open:
+            st = self._midi.stats
+            parts.append(f"sent {st['sent']}")
+            if st["failed"]:
+                parts.append(f"err {st['failed']}")
         if self._playback is not None and self._engine is not None:
             src = self._engine.source
             if isinstance(src, ArrayPlaybackSource):
@@ -521,6 +530,34 @@ class DevicePanel(QWidget):
                     f"{src.duration_seconds:.0f}s"
                 )
         self._stats.setText("   ".join(parts))
+        self._surface_midi_health()
+
+    def _surface_midi_health(self) -> None:
+        """Tell the truth about the wire: sends failing vs recovered.
+
+        Without this the app looks alive (the event monitor keeps moving —
+        events are generated regardless) while nothing reaches loopMIDI.
+        """
+        if not self._midi.is_open:
+            self._midi_stall_shown = False
+            return
+        st = self._midi.stats
+        if self._midi.is_stalled:
+            self._midi_stall_shown = True
+            self._set_status(
+                "MIDI STALLED — reconnecting…", color=FG_MAGENTA
+            )
+            return
+        if st["reconnects"] > self._known_reconnects:
+            self._known_reconnects = st["reconnects"]
+            self._midi_stall_shown = False
+            self._set_status(
+                f"MIDI: {self._midi.port_name} (reconnected)", color=FG_GOOD
+            )
+        elif self._midi_stall_shown:
+            # Stall cleared without a full reconnect (transient failure).
+            self._midi_stall_shown = False
+            self._set_status(f"MIDI: {self._midi.port_name}", color=FG_GOOD)
 
     def _set_status(self, text: str, color: str = FG_DIM) -> None:
         self._status.setText(text)

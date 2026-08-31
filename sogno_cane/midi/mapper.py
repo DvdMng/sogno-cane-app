@@ -161,6 +161,24 @@ class MappingEngine:
         self._t_seconds = 0.0
         self._total_samples = 0
 
+    def reset_strategy_state(self) -> None:
+        """Clear per-run runtime state on every attached strategy.
+
+        Strategy objects outlive engines: the UI re-adds the same live
+        (panel-edited) instances to every new engine, whose simulation
+        clock restarts at zero. Without this, gate/throttle timestamps
+        from the previous run mute voices for up to the previous session's
+        whole duration — heard as "MIDI stops after a stop/start".
+        """
+        for s in self._strategies:
+            reset = getattr(s, "reset_runtime", None)
+            if reset is None:
+                continue
+            try:
+                reset()
+            except Exception:
+                continue
+
     def shutdown(self) -> list[MappingEvent]:
         events: list[MappingEvent] = []
         for s in self._strategies:

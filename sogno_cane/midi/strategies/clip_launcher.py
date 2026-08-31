@@ -75,6 +75,11 @@ class ClipLauncherStrategy:
             power = float(arr[rule.eeg_channel])
 
             last_fire = self._last_fire_t.get(idx, -1.0e9)
+            if last_fire > t:
+                # Clock restarted behind our state (fresh engine re-using
+                # this live strategy object): drop the stale lockout.
+                last_fire = -1.0e9
+                self._last_fire_t[idx] = last_fire
             locked = (t - last_fire) < max(0.0, rule.min_interval_seconds)
             armed = self._armed.get(idx, True)
 
@@ -94,6 +99,12 @@ class ClipLauncherStrategy:
             ):
                 self._armed[idx] = True
         return events
+
+    def reset_runtime(self) -> None:
+        """Forget per-run state so a fresh engine clock starts clean."""
+        self._armed.clear()
+        self._last_fire_t.clear()
+        self._held.clear()
 
     def shutdown(self) -> list[MappingEvent]:
         events = [

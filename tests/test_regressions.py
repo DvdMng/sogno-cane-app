@@ -39,6 +39,11 @@ def test_playback_finish_flushes_notes_no_stuck():
         eeg_channel=0, midi_channel=0, band="alpha",
         min_interval_seconds=0.0, min_duration_seconds=0.0,
         change_threshold_norm=0.0, sustain=True,
+        # Legato: the strategy owns every release, so on/off counts must
+        # balance exactly. (Gated notes may legitimately skip an off on a
+        # fast same-pitch restrike — the scheduler supersedes it — which
+        # made the strict equality below flaky at this time_scale.)
+        note_length_seconds=0.0,
     )
     eng = RealtimeEngine(source=src, midi=midi)
     eng.mapper.add_strategy(PerChannelBandStrategy(voices=[voice]))

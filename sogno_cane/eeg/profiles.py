@@ -33,6 +33,35 @@ class BandSpec:
 
 
 @dataclass(frozen=True)
+class SleepCycleSpec:
+    """Slow sleep-architecture modulation layered on top of the base bands.
+
+    The simulator crossfades between a deep-NREM character and a REM
+    character over each cycle: REM occupies the tail (``rem_fraction``) with
+    raised-cosine transitions of ``transition_seconds``. REM does not just
+    shift band *levels* (an adaptive normaliser would flatten those) — it
+    speeds up the band-power *fluctuations* (``rem_variability``) and the
+    muscle twitches (``rem_emg_gain``), which is what audibly accelerates
+    the musical output.
+    """
+
+    cycle_seconds: float
+    rem_fraction: float = 0.25
+    transition_seconds: float = 40.0
+    # Position in the cycle at t=0 (0..1). Different values for human and
+    # dog make the two streams diverge immediately.
+    start_phase: float = 0.0
+    # Per-band amplitude multipliers in deep NREM and in REM.
+    nrem_band_gain: dict[str, float] = field(default_factory=dict)
+    rem_band_gain: dict[str, float] = field(default_factory=dict)
+    # Multipliers on the band-envelope random-walk speed (power variability).
+    nrem_variability: float = 0.6
+    rem_variability: float = 2.5
+    # Multiplier on the EMG burst rate during REM (dream twitches).
+    rem_emg_gain: float = 3.0
+
+
+@dataclass(frozen=True)
 class DeviceProfile:
     name: str
     channel_names: tuple[str, ...]
@@ -57,6 +86,8 @@ class DeviceProfile:
     band_channel_weights: dict[str, tuple[float, ...]] = field(
         default_factory=dict
     )
+    # Optional sleep architecture (None = stationary signal, old behaviour).
+    sleep: SleepCycleSpec | None = None
 
 
 HUMAN_PROFILE = DeviceProfile(
@@ -90,6 +121,25 @@ HUMAN_PROFILE = DeviceProfile(
         # Frontal beta slight boost (Fz).
         "beta":  (1.2, 1.0, 1.1, 1.0, 0.9, 0.8, 0.8, 0.8),
     },
+    # Human sleep: the classic ~90 min cycle, REM in the tail. Starting a
+    # little into the descent so the first minutes already evolve.
+    sleep=SleepCycleSpec(
+        cycle_seconds=5400.0,
+        rem_fraction=0.22,
+        transition_seconds=60.0,
+        start_phase=0.10,
+        nrem_band_gain={
+            "delta": 1.5, "theta": 1.1, "alpha": 0.65,
+            "beta": 0.6, "gamma": 0.8,
+        },
+        rem_band_gain={
+            "delta": 0.6, "theta": 1.3, "alpha": 0.8,
+            "beta": 1.5, "gamma": 1.3,
+        },
+        nrem_variability=0.6,
+        rem_variability=2.0,
+        rem_emg_gain=1.3,   # REM atonia: humans barely twitch
+    ),
 )
 
 
@@ -122,6 +172,26 @@ DOG_PROFILE = DeviceProfile(
         "theta": (1.1, 1.2, 1.2, 1.4, 1.0, 1.0, 0.9, 0.9),
         "gamma": (0.8, 0.9, 0.9, 1.0, 1.1, 1.1, 1.2, 1.2),
     },
+    # Canine sleep: fast ~20 min cycles — REM arrives around minute 15 of
+    # every cycle and audibly accelerates the activity (dogs dream loudly:
+    # theta/beta/gamma up, twitching paws).
+    sleep=SleepCycleSpec(
+        cycle_seconds=1200.0,
+        rem_fraction=0.25,
+        transition_seconds=30.0,
+        start_phase=0.0,
+        nrem_band_gain={
+            "delta": 1.6, "theta": 1.0, "alpha": 0.7,
+            "beta": 0.5, "gamma": 0.6,
+        },
+        rem_band_gain={
+            "delta": 0.5, "theta": 1.5, "alpha": 0.9,
+            "beta": 1.8, "gamma": 1.8,
+        },
+        nrem_variability=0.6,
+        rem_variability=2.8,
+        rem_emg_gain=4.0,   # dream twitches
+    ),
 )
 
 

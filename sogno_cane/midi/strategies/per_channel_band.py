@@ -58,6 +58,12 @@ class PerChannelVoice:
     # (15 ms default: short trigger that lets DAW envelopes modulate).
     # 0 = hold the note until the voice changes pitch (legato, old behaviour).
     note_length_seconds: float = 0.015
+    # Liveness failsafe (seconds, 0 = off): if the voice has emitted nothing
+    # for this long while the signal is audible, retrigger anyway (bypassing
+    # the hysteresis and the same-pitch dedup). A stable band power can
+    # otherwise mute a voice indefinitely — heard as "one of the MIDI
+    # channels stopped transmitting".
+    max_silence_seconds: float = 10.0
     # --- normalisation mode ---
     adaptive: bool = True
     enabled: bool = True
@@ -192,12 +198,19 @@ class PerChannelBandStrategy:
         velocity = max(1, min(127, velocity))
 
         if voice.sustain:
-            if new_note == prev_note:
+            starved = gate.is_starved(
+                t, max_silence=voice.max_silence_seconds
+            )
+            # Same pitch normally means "nothing to do" — unless the voice
+            # has been starved quiet, in which case we retrigger it so the
+            # channel stays audibly alive.
+            if new_note == prev_note and not starved:
                 return events
             allowed = gate.may_change(
                 t, norm,
                 min_interval=voice.min_interval_seconds,
                 change_threshold=voice.change_threshold_norm,
+                max_silence=voice.max_silence_seconds,
             )
             if prev_note is not None and not gate.may_release(
                 t, min_hold=voice.min_duration_seconds
@@ -252,6 +265,20 @@ class PerChannelBandStrategy:
             self._gated[voice.eeg_channel] = gate_len > 0.0
             gate.commit_on(t, norm)
         return events
+
+    def reset_runtime(self) -> None:
+        """Forget per-run state (remembered notes, gate timers).
+
+        Called when a fresh engine starts: its simulation clock restarts at
+        zero, so timestamps and note memory from the previous run must not
+        leak in (they would mute voices for the previous run's duration).
+        The AGC calibration survives on purpose — the signal scale did not
+        change across a stop/start.
+        """
+        self._last_notes.clear()
+        self._gated.clear()
+        for g in self._gates.values():
+            g.reset()
 
     def shutdown(self) -> list[MappingEvent]:
         events: list[MappingEvent] = []

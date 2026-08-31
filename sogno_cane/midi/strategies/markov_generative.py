@@ -73,6 +73,12 @@ class MarkovGenerativeStrategy:
         events: list[MappingEvent] = []
         t = ctx.t_seconds
 
+        # Self-heal when the clock restarted behind our state (fresh engine
+        # re-using this live strategy object): a stale timestamp would mute
+        # the voice for the previous run's whole duration.
+        if self._last_phrase_t > t:
+            self._last_phrase_t = -1.0e9
+
         # Only generate a new phrase once the interval has elapsed.
         if t - self._last_phrase_t < max(0.0, self.min_interval_seconds):
             return events
@@ -135,6 +141,12 @@ class MarkovGenerativeStrategy:
         mean = 0.85 * self._last_idx + 0.15 * center
         x = int(round(self._rng.normal(mean, sigma)))
         return int(np.clip(x, 0, n_steps - 1))
+
+    def reset_runtime(self) -> None:
+        """Forget per-run state so a fresh engine clock starts clean."""
+        self._held.clear()
+        self._last_phrase_t = -1.0e9
+        self._last_idx = None
 
     def shutdown(self) -> list[MappingEvent]:
         events = [

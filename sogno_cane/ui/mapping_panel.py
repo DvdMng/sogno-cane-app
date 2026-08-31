@@ -212,6 +212,29 @@ class MappingPanel(QWidget):
         pgrid.addWidget(QLabel("note length"), 1, 2)
         pgrid.addWidget(sb_note_len, 1, 3)
 
+        first_max_silence = getattr(
+            voices_list[0], "max_silence_seconds", 10.0
+        ) if voices_list else 10.0
+        sb_max_sil = QDoubleSpinBox()
+        sb_max_sil.setRange(0.0, 120.0)
+        sb_max_sil.setSingleStep(1.0)
+        sb_max_sil.setSuffix(" s")
+        sb_max_sil.setDecimals(0)
+        sb_max_sil.setSpecialValueText("OFF")
+        sb_max_sil.setValue(float(first_max_silence))
+        sb_max_sil.setToolTip(
+            "Liveness failsafe: if a voice has been silent this long while\n"
+            "the signal is audible, it retriggers anyway (even on the same\n"
+            "pitch). Keeps every MIDI channel alive when the band power is\n"
+            "too stable to cross the change threshold. 0 = OFF."
+        )
+        def _apply_max_sil(v):
+            for vc in voices_list:
+                self._set_safe(vc, "max_silence_seconds", float(v))
+        sb_max_sil.valueChanged.connect(_apply_max_sil)
+        pgrid.addWidget(QLabel("max silence"), 2, 0)
+        pgrid.addWidget(sb_max_sil, 2, 1)
+
         layout.addWidget(pacing)
 
         # --- per-voice config -----------------------------------------

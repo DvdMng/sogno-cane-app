@@ -237,6 +237,11 @@ class RealtimeEngine:
     def start(self) -> None:
         if self._running:
             return
+        # Strategies are shared live objects that may carry gate/throttle
+        # timestamps from a previous engine (whose clock ran far ahead of
+        # this one, which starts at zero). Clear them or voices stay mute
+        # for up to the previous run's duration.
+        self._mapper.reset_strategy_state()
         self._stop_event.clear()
         self._running = True
         self._thread = threading.Thread(

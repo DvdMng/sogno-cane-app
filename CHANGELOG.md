@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.6.0
+Risponde ai feedback del 29/08: "quando cambio setup o fermo/riavvio
+l'encefalogramma la comunicazione MIDI si interrompe, a volte un canale
+smette di trasmettere, e l'app dice che manda dati mentre loopMIDI è
+impallato"; "umano e cane sembrano identici, il ciclo del sonno del cane
+(~20 min) non accelera mai in fase REM".
+
+- **Fix: MIDI muto dopo STOP/START o cambio setup.** Le strategie di
+  mappatura sopravvivono al motore (la UI riusa gli stessi oggetti), ma il
+  nuovo motore riparte con l'orologio a zero: i timestamp di pacing della
+  sessione precedente bloccavano le voci **per una durata pari all'intera
+  sessione precedente** (10 minuti suonati = 10 minuti di silenzio dopo il
+  riavvio, per voce). Ora l'avvio del motore azzera lo stato di runtime di
+  ogni strategia (note ricordate, gate, throttle) e, per difesa in
+  profondità, i gate si auto-riparano se rilevano l'orologio tornato
+  indietro. Al riavvio le voci parlano subito e i CC ri-emettono subito il
+  valore corrente (Ableton si riallinea senza aspettare una variazione).
+- **Fix: "l'app manda ma loopMIDI è fermo".** Gli errori di invio rtmidi
+  non vengono più inghiottiti: ora sono contati e visibili nella riga di
+  stato di ogni dispositivo (`sent N` / `err N`). Dopo 8 invii falliti
+  consecutivi l'app dichiara **MIDI STALLED** e **si riconnette da sola**
+  alla stessa porta per nome (utile quando loopMIDI ricrea la porta o il
+  driver si inceppa); alla riconnessione invia All-Notes-Off su tutti i 16
+  canali per pulire eventuali note appese, e lo stato mostra
+  "(reconnected)".
+- **Fix: "uno dei nove canali smette di trasmettere".** La soglia di
+  cambiamento (isteresi) poteva ammutolire per sempre una voce se la banda
+  restava stabile. Nuovo controllo **"max silence"** (schede NOTES / CH):
+  se una voce tace più di N secondi con segnale udibile, ritrigghera
+  comunque (anche sulla stessa nota). Default **10 s**, 0 = OFF
+  (comportamento precedente). Salvato nelle configurazioni, retrocompatibile.
+- **Novità: architettura del sonno nel simulatore.** I profili HUMAN e DOG
+  ora dormono davvero: il CANE cicla ogni **~20 minuti** con una coda REM
+  (~5 min) in cui theta/beta/gamma salgono, le fluttuazioni accelerano
+  (più note, più densità) e i "twitch" muscolari aumentano — il sogno si
+  sente; l'UMANO segue il ciclo classico da **~90 minuti** con
+  un'atonia REM più composta. I due stream divergono subito e non suonano
+  più identici. I profili senza architettura del sonno restano stazionari
+  come prima.
+
 ## 0.5.0
 - **Durata delle note (gate) finalmente controllabile** — fix del feedback
   "la nota MIDI resta lunga ~2 secondi e blocca gli inviluppi". Prima il

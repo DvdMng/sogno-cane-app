@@ -68,6 +68,9 @@ class BandToNoteStrategy:
     # Fixed note length (gate) in seconds; 0 = hold until the pitch changes
     # (legato). >0 = the engine sends note_off after exactly this long.
     note_length_seconds: float = 0.015
+    # Liveness failsafe (seconds, 0 = off): retrigger after this much
+    # silence even if the hysteresis would block (see PerChannelVoice).
+    max_silence_seconds: float = 10.0
     channel: int = 0
     name: str = "BandToNote"
     enabled: bool = True
@@ -138,12 +141,16 @@ class BandToNoteStrategy:
 
         events: list[MappingEvent] = []
         if self.sustain:
-            if new_note == self._last_note:
+            starved = self._gate.is_starved(
+                t, max_silence=self.max_silence_seconds
+            )
+            if new_note == self._last_note and not starved:
                 return events
             allowed = self._gate.may_change(
                 t, norm,
                 min_interval=self.min_interval_seconds,
                 change_threshold=self.change_threshold_norm,
+                max_silence=self.max_silence_seconds,
             )
             if self._last_note is not None and not self._gate.may_release(
                 t, min_hold=self.min_duration_seconds
@@ -189,6 +196,12 @@ class BandToNoteStrategy:
             self._gated_last = gate_len > 0.0
             self._gate.commit_on(t, norm)
         return events
+
+    def reset_runtime(self) -> None:
+        """Forget per-run state (see PerChannelBandStrategy.reset_runtime)."""
+        self._last_note = None
+        self._gated_last = False
+        self._gate.reset()
 
     def shutdown(self) -> list[MappingEvent]:
         if self._last_note is None:

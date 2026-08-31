@@ -15,6 +15,11 @@ All amplitudes are in microvolts; sampling resolution mirrors the Unicorn's
 24-bit ADC over its full +/- 750 mV input range (~0.09 uV per LSB), which is
 applied as a quantization step so the output is byte-faithful to a real
 acquisition.
+
+When the profile carries a :class:`~sogno_cane.eeg.profiles.SleepCycleSpec`,
+a slow sleep-architecture layer crossfades band gains, band-power volatility
+and EMG twitch rate between deep NREM and REM over each cycle (dog ~20 min,
+human ~90 min), so the two subjects audibly evolve and differ.
 """
 from __future__ import annotations
 
@@ -136,6 +141,38 @@ class EEGSimulator:
     def elapsed_seconds(self) -> float:
         return self._elapsed_s
 
+    def sleep_stage_rem_weight(self, t: Optional[float] = None) -> float:
+        """Where in the sleep architecture the subject is: 0 = deep NREM,
+        1 = full REM, smoothly crossfaded in between.
+
+        Deterministic in simulation time, so seeded runs stay reproducible.
+        Profiles without a :class:`SleepCycleSpec` are permanently 0.
+        """
+        spec = self._profile.sleep
+        if spec is None:
+            return 0.0
+        if t is None:
+            t = self._elapsed_s
+        cyc = max(1e-9, spec.cycle_seconds)
+        pos = ((t / cyc) + spec.start_phase) % 1.0
+        rem_frac = min(0.9, max(0.0, spec.rem_fraction))
+        if rem_frac <= 0.0:
+            return 0.0
+        rem_start = 1.0 - rem_frac
+        # Transition width as a cycle fraction, kept short enough that the
+        # ramps never swallow the REM plateau (or the NREM one).
+        tr = spec.transition_seconds / cyc
+        tr = max(1e-6, min(tr, rem_frac * 0.5, (1.0 - rem_frac) * 0.5))
+        if pos < rem_start - tr:
+            return 0.0
+        if pos < rem_start:
+            x = (pos - (rem_start - tr)) / tr
+            return 0.5 * (1.0 - np.cos(np.pi * x))
+        if pos < 1.0 - tr:
+            return 1.0
+        x = (pos - (1.0 - tr)) / tr
+        return 0.5 * (1.0 + np.cos(np.pi * x))
+
     def reset(self) -> None:
         self._sample_counter = 0
         self._elapsed_s = 0.0
@@ -146,6 +183,8 @@ class EEGSimulator:
         self._emg_envelope = 0.0
         self._blink_envelope = 0.0
         self._line_phase = 0.0
+        for state in self._band_states:
+            state.amplitude_env.fill(1.0)
 
     def next_packet(
         self,
@@ -238,10 +277,27 @@ class EEGSimulator:
             out[i] += gain * self._pink_state
 
         # ----- narrow-band oscillators -----
+        # Sleep architecture: crossfade band gains and envelope volatility
+        # between deep NREM and REM (elapsed_s is the packet start time).
+        sleep = self._profile.sleep
+        rem_w = self.sleep_stage_rem_weight() if sleep is not None else 0.0
         t_axis = np.arange(n, dtype=np.float64) * dt
         for band, state in zip(self._profile.bands, self._band_states):
-            # Slow amplitude modulation (1 Hz Gaussian random walk, clipped).
-            mod = self._rng.normal(0.0, 0.05, size=nc)
+            if sleep is not None:
+                g0 = sleep.nrem_band_gain.get(band.name, 1.0)
+                g1 = sleep.rem_band_gain.get(band.name, 1.0)
+                stage_gain = g0 + (g1 - g0) * rem_w
+                variability = (
+                    sleep.nrem_variability
+                    + (sleep.rem_variability - sleep.nrem_variability) * rem_w
+                )
+            else:
+                stage_gain = 1.0
+                variability = 1.0
+            # Slow amplitude modulation (Gaussian random walk, clipped).
+            # REM speeds the walk up: band powers fluctuate faster, which
+            # is what accelerates the downstream musical activity.
+            mod = self._rng.normal(0.0, 0.05 * variability, size=nc)
             state.amplitude_env = np.clip(
                 state.amplitude_env + mod, 0.4, 1.6
             )
@@ -258,7 +314,9 @@ class EEGSimulator:
                 ),
                 dtype=np.float64,
             )
-            amp = band.amplitude_uv * w * state.amplitude_env  # (nc,)
+            amp = (
+                band.amplitude_uv * stage_gain * w * state.amplitude_env
+            )  # (nc,)
             phases = (
                 state.phase[None, :]
                 + np.cumsum(np.broadcast_to(phase_inc, (n, nc)), axis=0)
@@ -293,7 +351,11 @@ class EEGSimulator:
                     out[i, ch] += self._blink_envelope
 
         # ----- EMG bursts (Poisson-triggered noisy bumps) -----
-        emg_prob = self._profile.emg_burst_rate_hz * dt
+        # REM multiplies the burst rate: the dreaming body twitches.
+        emg_rate = self._profile.emg_burst_rate_hz
+        if sleep is not None:
+            emg_rate *= 1.0 + (sleep.rem_emg_gain - 1.0) * rem_w
+        emg_prob = emg_rate * dt
         for i in range(n):
             if self._rng.random() < emg_prob:
                 self._emg_envelope = self._profile.emg_burst_amplitude_uv

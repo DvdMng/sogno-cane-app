@@ -10,6 +10,7 @@ codebase keeps working.
 from __future__ import annotations
 
 import threading
+import time
 from contextlib import contextmanager
 from typing import Iterable
 
@@ -61,13 +62,35 @@ def list_output_ports() -> list[str]:
         return []
 
 
+# After this many back-to-back send failures the output is considered
+# stalled and a reconnect to the same port name is attempted.
+RECONNECT_AFTER_FAILURES = 8
+# Minimum seconds between two reconnect attempts (a dead port must not spin).
+RECONNECT_MIN_INTERVAL_S = 2.0
+
+
 class MidiOutput:
-    """Thread-safe MIDI output. Opens a single port and queues writes."""
+    """Thread-safe MIDI output. Opens a single port and queues writes.
+
+    Send failures are counted instead of vanishing: a stale handle (e.g.
+    a loopMIDI port that was re-created, or a driver hiccup) makes every
+    send raise while the app looks perfectly alive — the user sees the
+    event monitor move while loopMIDI's counter is frozen. After a few
+    consecutive failures the output automatically re-opens the same port
+    by name and sends All-Notes-Off to clear anything left hanging.
+    """
 
     def __init__(self) -> None:
         self._port = None
         self._port_name: str | None = None
         self._lock = threading.Lock()
+        # Health bookkeeping (all guarded by _lock).
+        self._sent_count = 0
+        self._failed_count = 0
+        self._consec_failures = 0
+        self._reconnects = 0
+        self._last_error = ""
+        self._last_reconnect_attempt = -1.0e9
 
     @property
     def is_open(self) -> bool:
@@ -77,6 +100,23 @@ class MidiOutput:
     def port_name(self) -> str | None:
         return self._port_name
 
+    @staticmethod
+    def _find_port_index(out, port_name: str) -> int:
+        n = out.get_port_count()
+        # 1. Exact match after stripping rtmidi's trailing index.
+        for i in range(n):
+            if _strip_rtmidi_suffix(out.get_port_name(i), i) == port_name:
+                return i
+        # 2. Exact match on raw rtmidi name.
+        for i in range(n):
+            if out.get_port_name(i) == port_name:
+                return i
+        # 3. Substring fallback.
+        for i in range(n):
+            if port_name in out.get_port_name(i):
+                return i
+        return -1
+
     def open(self, port_name: str) -> None:
         if not _HAVE_RTMIDI:
             raise RuntimeError(
@@ -85,30 +125,14 @@ class MidiOutput:
         with self._lock:
             self._close_locked()
             out = rtmidi.MidiOut()
-            n = out.get_port_count()
-            idx = -1
-            # 1. Exact match after stripping rtmidi's trailing index.
-            for i in range(n):
-                if _strip_rtmidi_suffix(out.get_port_name(i), i) == port_name:
-                    idx = i
-                    break
-            # 2. Exact match on raw rtmidi name.
-            if idx < 0:
-                for i in range(n):
-                    if out.get_port_name(i) == port_name:
-                        idx = i
-                        break
-            # 3. Substring fallback.
-            if idx < 0:
-                for i in range(n):
-                    if port_name in out.get_port_name(i):
-                        idx = i
-                        break
+            idx = self._find_port_index(out, port_name)
             if idx < 0:
                 raise RuntimeError(f"MIDI port {port_name!r} not found")
             out.open_port(idx, "SOGNO_CANE")
             self._port = out
             self._port_name = port_name
+            self._consec_failures = 0
+            self._last_error = ""
 
     def open_virtual(self, name: str = "SOGNO_CANE") -> None:
         """Open a virtual port. Supported on macOS/Linux only. On Windows
@@ -198,8 +222,80 @@ class MidiOutput:
                 return
             try:
                 self._port.send_message(msg)
-            except Exception:
-                pass
+                self._sent_count += 1
+                self._consec_failures = 0
+            except Exception as exc:
+                self._failed_count += 1
+                self._consec_failures += 1
+                self._last_error = str(exc) or type(exc).__name__
+                self._maybe_reconnect_locked()
+
+    # ------------------------------------------------------------------ #
+    # Health / auto-reconnect                                            #
+    # ------------------------------------------------------------------ #
+
+    @property
+    def stats(self) -> dict:
+        """Send health: what actually reached the port vs what failed."""
+        with self._lock:
+            return {
+                "sent": self._sent_count,
+                "failed": self._failed_count,
+                "consecutive_failures": self._consec_failures,
+                "reconnects": self._reconnects,
+                "last_error": self._last_error,
+            }
+
+    @property
+    def is_stalled(self) -> bool:
+        """True while sends are failing back-to-back (data not flowing)."""
+        with self._lock:
+            return (
+                self._port is not None
+                and self._consec_failures >= RECONNECT_AFTER_FAILURES
+            )
+
+    def _maybe_reconnect_locked(self) -> None:
+        """Re-open the same port by name after repeated send failures.
+
+        Called with the lock held, from the send path. Rate-limited so a
+        genuinely missing port cannot make every send pay a scan cost.
+        """
+        if self._consec_failures < RECONNECT_AFTER_FAILURES:
+            return
+        name = self._port_name
+        if not name:
+            return
+        now = time.monotonic()
+        if now - self._last_reconnect_attempt < RECONNECT_MIN_INTERVAL_S:
+            return
+        self._last_reconnect_attempt = now
+        try:
+            out = rtmidi.MidiOut()
+            idx = self._find_port_index(out, name)
+            if idx < 0:
+                raise RuntimeError(f"MIDI port {name!r} not found")
+            out.open_port(idx, "SOGNO_CANE")
+        except Exception as exc:
+            # Keep the broken handle: every further send keeps failing,
+            # which keeps this retry loop alive (rate-limited) until the
+            # port reappears or the user disconnects.
+            self._last_error = str(exc) or type(exc).__name__
+            return
+        # Swap handles only now that the replacement is alive.
+        old, self._port = self._port, out
+        try:
+            old.close_port()
+        except Exception:
+            pass
+        self._reconnects += 1
+        self._consec_failures = 0
+        # The synth may still hold notes from before the stall.
+        try:
+            for ch in range(16):
+                self._port.send_message([_status(0xB0, ch), 123, 0])
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ #
     # Context manager                                                    #

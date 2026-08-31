@@ -68,6 +68,10 @@ class CoherenceCCStrategy:
             self.smoothing * self._smoothed + (1.0 - self.smoothing) * s
         )
         cc_val = int(round(self._smoothed * 127.0))
+        if self._last_t > ctx.t_seconds:
+            # Clock restarted behind our state (fresh engine re-using this
+            # live strategy object): drop the stale throttle timestamp.
+            self._last_t = -1.0e9
         if cc_val == self._last_cc:
             return []
         if ctx.t_seconds - self._last_t < max(0.0, self.min_interval_seconds):
@@ -84,6 +88,11 @@ class CoherenceCCStrategy:
     def _band_range_hz(self) -> tuple[float, float]:
         from sogno_cane.eeg.bands import BAND_RANGES_HZ
         return BAND_RANGES_HZ.get(self.band, (8.0, 13.0))
+
+    def reset_runtime(self) -> None:
+        """Forget the emission throttle so a fresh engine starts clean."""
+        self._last_cc = -1
+        self._last_t = -1.0e9
 
     def shutdown(self) -> list[MappingEvent]:
         return []

@@ -245,7 +245,9 @@ class MainWindow(QMainWindow):
             "  • Tune musicality in the mapping tabs (interval / hold /\n"
             "    change threshold control how sparse each voice is;\n"
             "    'note length' sets how long each note sounds — 15 ms\n"
-            "    default for envelope triggers, 0 = HOLD for legato).\n\n"
+            "    default for envelope triggers, 0 = HOLD for legato;\n"
+            "    'max silence' retriggers a voice that stayed quiet too\n"
+            "    long, so no MIDI channel ever goes dead).\n\n"
             "ARCHIVE\n"
             "  • Rename, CUT a time range, EXPORT CSV, DELETE, or\n"
             "    LOAD a recording back into a device for playback.",

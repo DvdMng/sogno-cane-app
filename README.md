@@ -10,32 +10,21 @@ MIDI inviabile a qualsiasi DAW (Ableton, ecc.) tramite una porta MIDI virtuale
 
 ---
 
-## Novità della versione 0.2.0
+## Novità della versione 0.6.0
 
-* **Musicalità corretta.** I controlli di *pacing* (intervallo minimo, durata
-  minima, soglia di cambiamento) ora funzionano davvero: la densità di note è
-  scesa da ~45 note/s a ~6 note/s. Ogni voce ha una normalizzazione adattiva
-  (AGC) che usa l'intera gamma di altezze indipendentemente dall'ampiezza del
-  segnale.
-* **Registrazione & Archivio.** Pulsante **● REC** su ogni dispositivo: cattura
-  il segnale in arrivo (simulato *o* da file) e lo salva nell'archivio. Dalla
-  scheda **ARCHIVE** puoi **rinominare**, **tagliare** (CUT di un intervallo),
-  **esportare in CSV**, **eliminare** o **ricaricare** una registrazione per
-  riprodurla.
-* **Caricamento file EEG.** Pulsante **LOAD FILE**: riproduce un file EEG
-  attraverso lo stesso motore di mappatura. Formati supportati:
-  `.edf`, `.bdf`, `.rec` (European Data Format / BioSemi 24-bit), `.csv`,
-  `.tsv`, `.txt`, `.npz`, `.npy`. Il lettore EDF/BDF è scritto da zero (nessuna
-  dipendenza extra) ed è validato bit-a-bit contro `pyedflib`.
-* **Trasporto globale.** START ALL / STOP ALL / PANIC (all-notes-off) e un
-  pulsante di aiuto rapido.
-* **Persistenza impostazioni.** Profilo, porta MIDI e dimensioni finestra sono
-  ricordati tra un avvio e l'altro.
-* **Avvio robusto.** In caso di errore appare una finestra di dettaglio e un log
-  in `~/.sogno_cane/last_error.log`. Diagnostica headless:
-  `python -m sogno_cane --selftest`.
-* **Struttura & test.** Pacchetto Python pulito con `pyproject.toml` e una
-  suite di **85 test** (`pytest`).
+* **MIDI affidabile su sessioni lunghe.** Dopo uno STOP/START o un cambio di
+  setup le voci parlano subito (prima potevano restare mute per l'intera
+  durata della sessione precedente). Gli errori di invio verso loopMIDI non
+  sono più silenziosi: la riga di stato mostra `sent`/`err`, e in caso di
+  stallo l'app si **riconnette da sola** alla porta e pulisce le note appese.
+* **"max silence"** (schede NOTES / CH): failsafe di vivacità — se una voce
+  tace troppo a lungo ritrigghera comunque, così nessun canale MIDI "muore"
+  quando la banda è stabile. Default 10 s, 0 = OFF.
+* **Il simulatore dorme davvero.** DOG: ciclo ~20 min con fase REM che
+  accelera l'attività (theta/beta/gamma, twitch); HUMAN: ciclo ~90 min.
+  Umano e cane ora evolvono e si distinguono a orecchio.
+
+Le versioni precedenti sono documentate nel [CHANGELOG](CHANGELOG.md).
 
 ---
 

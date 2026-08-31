@@ -97,6 +97,11 @@ class ThresholdTriggerStrategy:
         release = self.threshold_uv2 * self.release_ratio
         t = ctx.t_seconds
 
+        # Self-heal when the clock restarted behind our state (fresh engine
+        # re-using this live strategy object).
+        if self._last_trigger_t > t:
+            self._last_trigger_t = -1.0e9
+
         if (
             not self._is_active
             and mean_pow >= self.threshold_uv2
@@ -144,6 +149,17 @@ class ThresholdTriggerStrategy:
             self.velocity_max - self.velocity_at_threshold
         )
         return int(max(1, min(127, round(v))))
+
+    def reset_runtime(self) -> None:
+        """Forget per-run state so a fresh engine clock starts clean.
+
+        ``_cycle_index`` survives on purpose: continuing the note sequence
+        across a stop/start is musically nicer than restarting it.
+        """
+        self._is_active = False
+        self._active_note = None
+        self._gated_last = False
+        self._last_trigger_t = -1.0e9
 
     def shutdown(self) -> list[MappingEvent]:
         if self._active_note is None:

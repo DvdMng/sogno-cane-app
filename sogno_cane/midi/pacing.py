@@ -88,6 +88,29 @@ class NoteGate:
         self._last_norm = None
         self._note_on_t = None
 
+    def _heal_clock(self, t: float) -> None:
+        """Recover from a simulation clock that restarted behind our state.
+
+        Strategy objects outlive engines (the UI re-adds the same live
+        instances to every new engine, whose clock starts at zero), so a
+        timestamp from a previous run would otherwise keep the voice mute
+        for up to the previous session's whole duration.
+        """
+        if self._last_change_t > t:
+            self._last_change_t = -1.0e9
+        if self._note_on_t is not None and self._note_on_t > t:
+            self._note_on_t = None
+
+    def is_starved(self, t: float, *, max_silence: float) -> bool:
+        """True if the voice has been quiet for at least ``max_silence`` s.
+
+        ``max_silence <= 0`` disables the check (never starved).
+        """
+        if max_silence <= 0.0:
+            return False
+        self._heal_clock(t)
+        return (t - self._last_change_t) >= max_silence
+
     def may_change(
         self,
         t: float,
@@ -95,10 +118,20 @@ class NoteGate:
         *,
         min_interval: float,
         change_threshold: float,
+        max_silence: float = 0.0,
     ) -> bool:
-        """True if a new note is allowed *now* given interval + hysteresis."""
+        """True if a new note is allowed *now* given interval + hysteresis.
+
+        ``max_silence`` (seconds, 0 = off) is a liveness failsafe: once the
+        voice has been quiet that long, the hysteresis check is bypassed so
+        a stable signal can no longer starve the voice forever. The rate
+        limit (``min_interval``) still applies.
+        """
+        self._heal_clock(t)
         if t - self._last_change_t < max(0.0, min_interval):
             return False
+        if self.is_starved(t, max_silence=max_silence):
+            return True
         if (
             self._last_norm is not None
             and abs(norm - self._last_norm) < max(0.0, change_threshold)
@@ -108,6 +141,7 @@ class NoteGate:
 
     def may_release(self, t: float, *, min_hold: float) -> bool:
         """True if the currently-held note has met its minimum hold time."""
+        self._heal_clock(t)
         if self._note_on_t is None:
             return True
         return (t - self._note_on_t) >= max(0.0, min_hold)

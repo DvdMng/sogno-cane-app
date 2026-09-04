@@ -29,7 +29,7 @@ def test_main_window_builds(app, tmp_path, monkeypatch):
     win.show()
     assert win._tabs.count() == 3
     assert {win._tabs.tabText(i) for i in range(3)} == {
-        "STUDIO", "MAPPING", "ARCHIVE",
+        "STUDIO", "MAPPATURA", "ARCHIVIO",
     }
     win.close()
 

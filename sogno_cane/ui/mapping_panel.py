@@ -46,10 +46,10 @@ def _note_length_spinbox(current_seconds: float) -> QDoubleSpinBox:
     sb.setSpecialValueText("HOLD (legato)")
     sb.setValue(round(max(0.0, float(current_seconds)) * 1000.0))
     sb.setToolTip(
-        "Fixed MIDI note length in milliseconds (gate).\n"
-        "Short values (e.g. 15 ms) fire trigger notes so synth envelopes\n"
-        "can modulate freely. Set to 0 = HOLD to keep notes sounding until\n"
-        "the voice changes pitch (legato)."
+        "Durata fissa della nota MIDI, in millisecondi.\n"
+        "Valori brevi (es. 15 ms) sparano note-trigger, così gli inviluppi\n"
+        "del synth possono lavorare liberamente. Con 0 = HOLD la nota resta\n"
+        "tenuta finché la voce non cambia altezza (legato)."
     )
     return sb
 
@@ -69,9 +69,9 @@ def _safe_tab(builder, label: str) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
         msg = QLabel(
-            f"Tab '{label}' unavailable: {type(exc).__name__}: {exc}\n"
-            f"This usually means a mismatched module on disk; the rest of "
-            f"the app still works."
+            f"Scheda '{label}' non disponibile: {type(exc).__name__}: "
+            f"{exc}\nDi solito significa che un modulo su disco non "
+            f"combacia; il resto dell'app funziona lo stesso."
         )
         msg.setWordWrap(True)
         msg.setStyleSheet("color: #FFE372; padding: 12px;")
@@ -93,12 +93,12 @@ class MappingPanel(QWidget):
         outer.setContentsMargins(8, 8, 8, 8)
 
         tabs = QTabWidget()
-        tabs.addTab(_safe_tab(self._build_per_channel_band_tab, "NOTES / CH"), "NOTES / CH")
-        tabs.addTab(_safe_tab(self._build_per_channel_cc_tab, "CC / CH"),     "CC / CH")
-        tabs.addTab(_safe_tab(self._build_threshold_tab, "EVENTS"),            "EVENTS")
-        tabs.addTab(_safe_tab(self._build_coherence_tab, "COHERENCE"),         "COHERENCE")
+        tabs.addTab(_safe_tab(self._build_per_channel_band_tab, "NOTE / CANALE"), "NOTE / CANALE")
+        tabs.addTab(_safe_tab(self._build_per_channel_cc_tab, "CC / CANALE"),     "CC / CANALE")
+        tabs.addTab(_safe_tab(self._build_threshold_tab, "EVENTI"),            "EVENTI")
+        tabs.addTab(_safe_tab(self._build_coherence_tab, "COERENZA"),         "COERENZA")
         tabs.addTab(_safe_tab(self._build_markov_tab, "MARKOV"),               "MARKOV")
-        tabs.addTab(_safe_tab(self._build_clip_tab, "CLIPS"),                  "CLIPS")
+        tabs.addTab(_safe_tab(self._build_clip_tab, "CLIP"),                  "CLIP")
         outer.addWidget(tabs)
 
     # ------------------------------------------------------------------ #
@@ -126,10 +126,10 @@ class MappingPanel(QWidget):
 
         layout = QVBoxLayout(wrap)
         if strategy is None:
-            layout.addWidget(QLabel("per_channel_band not in this bundle."))
+            layout.addWidget(QLabel("per_channel_band non presente in questa configurazione."))
             return scroll
 
-        enable = QCheckBox("ENABLE PER-CHANNEL NOTES")
+        enable = QCheckBox("ATTIVA NOTE PER CANALE")
         enable.setChecked(getattr(strategy, "enabled", True))
         enable.toggled.connect(
             lambda v: self._set_safe(strategy, "enabled", v)
@@ -139,7 +139,7 @@ class MappingPanel(QWidget):
         voices_list = getattr(strategy, "voices", []) or []
 
         # --- PACING (live, applies to all voices) ---------------------
-        pacing = QGroupBox("PACING (applies to all voices in real time)")
+        pacing = QGroupBox("ANDAMENTO (vale per tutte le voci, in tempo reale)")
         pgrid = QGridLayout(pacing)
 
         first_interval = getattr(
@@ -162,13 +162,13 @@ class MappingPanel(QWidget):
         sb_interval.setDecimals(1)
         sb_interval.setValue(float(first_interval))
         sb_interval.setToolTip(
-            "Min seconds between two consecutive notes from the same voice."
+            "Secondi minimi fra due note della stessa voce."
         )
         def _apply_interval(v):
             for vc in voices_list:
                 self._set_safe(vc, "min_interval_seconds", float(v))
         sb_interval.valueChanged.connect(_apply_interval)
-        pgrid.addWidget(QLabel("min interval"), 0, 0)
+        pgrid.addWidget(QLabel("intervallo minimo"), 0, 0)
         pgrid.addWidget(sb_interval, 0, 1)
 
         sb_duration = QDoubleSpinBox()
@@ -178,13 +178,13 @@ class MappingPanel(QWidget):
         sb_duration.setDecimals(1)
         sb_duration.setValue(float(first_duration))
         sb_duration.setToolTip(
-            "Min seconds a note must hold before it can be changed/released."
+            "Secondi minimi che una nota deve durare prima di cambiare."
         )
         def _apply_duration(v):
             for vc in voices_list:
                 self._set_safe(vc, "min_duration_seconds", float(v))
         sb_duration.valueChanged.connect(_apply_duration)
-        pgrid.addWidget(QLabel("min hold"), 0, 2)
+        pgrid.addWidget(QLabel("durata minima"), 0, 2)
         pgrid.addWidget(sb_duration, 0, 3)
 
         sb_thresh = QDoubleSpinBox()
@@ -193,14 +193,14 @@ class MappingPanel(QWidget):
         sb_thresh.setDecimals(2)
         sb_thresh.setValue(float(first_threshold))
         sb_thresh.setToolTip(
-            "How much the band power must shift (0..1 normalised) before "
-            "the voice may speak again. Higher = more sparse."
+            "Quanto deve variare la potenza di banda (0..1) prima che la "
+            "voce possa riparlare. Più alto = più rado."
         )
         def _apply_thresh(v):
             for vc in voices_list:
                 self._set_safe(vc, "change_threshold_norm", float(v))
         sb_thresh.valueChanged.connect(_apply_thresh)
-        pgrid.addWidget(QLabel("change threshold"), 1, 0)
+        pgrid.addWidget(QLabel("soglia cambio"), 1, 0)
         pgrid.addWidget(sb_thresh, 1, 1)
 
         sb_note_len = _note_length_spinbox(first_note_len)
@@ -209,7 +209,7 @@ class MappingPanel(QWidget):
             for vc in voices_list:
                 self._set_safe(vc, "note_length_seconds", secs)
         sb_note_len.valueChanged.connect(_apply_note_len)
-        pgrid.addWidget(QLabel("note length"), 1, 2)
+        pgrid.addWidget(QLabel("durata nota"), 1, 2)
         pgrid.addWidget(sb_note_len, 1, 3)
 
         first_max_silence = getattr(
@@ -223,26 +223,26 @@ class MappingPanel(QWidget):
         sb_max_sil.setSpecialValueText("OFF")
         sb_max_sil.setValue(float(first_max_silence))
         sb_max_sil.setToolTip(
-            "Liveness failsafe: if a voice has been silent this long while\n"
-            "the signal is audible, it retriggers anyway (even on the same\n"
-            "pitch). Keeps every MIDI channel alive when the band power is\n"
-            "too stable to cross the change threshold. 0 = OFF."
+            "Rete di sicurezza: se una voce tace per questo tempo mentre il\n"
+            "segnale c'è, riparte comunque (anche sulla stessa nota). Tiene\n"
+            "vivi tutti i canali MIDI quando la banda è troppo stabile per\n"
+            "superare la soglia di cambiamento. 0 = SPENTA."
         )
         def _apply_max_sil(v):
             for vc in voices_list:
                 self._set_safe(vc, "max_silence_seconds", float(v))
         sb_max_sil.valueChanged.connect(_apply_max_sil)
-        pgrid.addWidget(QLabel("max silence"), 2, 0)
+        pgrid.addWidget(QLabel("silenzio max"), 2, 0)
         pgrid.addWidget(sb_max_sil, 2, 1)
 
         layout.addWidget(pacing)
 
         # --- per-voice config -----------------------------------------
         for i, voice in enumerate(voices_list):
-            box = QGroupBox(f"EEG CH {i}")
+            box = QGroupBox(f"CANALE EEG {i}")
             grid = QGridLayout(box)
 
-            cb_on = QCheckBox("on")
+            cb_on = QCheckBox("attivo")
             cb_on.setChecked(getattr(voice, "enabled", True))
             cb_on.toggled.connect(
                 lambda v, vc=voice: self._set_safe(vc, "enabled", v)
@@ -255,7 +255,7 @@ class MappingPanel(QWidget):
             band_cb.currentTextChanged.connect(
                 lambda t, vc=voice: self._set_safe(vc, "band", t)
             )
-            grid.addWidget(QLabel("band"), 0, 1)
+            grid.addWidget(QLabel("banda"), 0, 1)
             grid.addWidget(band_cb, 0, 2)
 
             scale_cb = QComboBox()
@@ -264,7 +264,7 @@ class MappingPanel(QWidget):
             scale_cb.currentTextChanged.connect(
                 lambda t, vc=voice: self._set_safe(vc, "scale", t)
             )
-            grid.addWidget(QLabel("scale"), 0, 3)
+            grid.addWidget(QLabel("scala"), 0, 3)
             grid.addWidget(scale_cb, 0, 4)
 
             root_cb = QComboBox()
@@ -273,7 +273,7 @@ class MappingPanel(QWidget):
             root_cb.currentTextChanged.connect(
                 lambda t, vc=voice: self._set_safe(vc, "root", t)
             )
-            grid.addWidget(QLabel("root"), 1, 1)
+            grid.addWidget(QLabel("tonica"), 1, 1)
             grid.addWidget(root_cb, 1, 2)
 
             midi_sb = QSpinBox()
@@ -282,7 +282,7 @@ class MappingPanel(QWidget):
             midi_sb.valueChanged.connect(
                 lambda v, vc=voice: self._set_safe(vc, "midi_channel", v - 1)
             )
-            grid.addWidget(QLabel("midi ch"), 1, 3)
+            grid.addWidget(QLabel("canale midi"), 1, 3)
             grid.addWidget(midi_sb, 1, 4)
 
             layout.addWidget(box)
@@ -298,10 +298,10 @@ class MappingPanel(QWidget):
 
         layout = QVBoxLayout(wrap)
         if strategy is None:
-            layout.addWidget(QLabel("per_channel_cc not in this bundle."))
+            layout.addWidget(QLabel("per_channel_cc non presente in questa configurazione."))
             return scroll
 
-        enable = QCheckBox("ENABLE PER-CHANNEL CCs")
+        enable = QCheckBox("ATTIVA CC PER CANALE")
         enable.setChecked(getattr(strategy, "enabled", False))
         enable.toggled.connect(
             lambda v: self._set_safe(strategy, "enabled", v)
@@ -309,10 +309,10 @@ class MappingPanel(QWidget):
         layout.addWidget(enable)
 
         for i, v in enumerate(getattr(strategy, "voices", []) or []):
-            box = QGroupBox(f"EEG CH {i}")
+            box = QGroupBox(f"CANALE EEG {i}")
             grid = QGridLayout(box)
 
-            cb_on = QCheckBox("on")
+            cb_on = QCheckBox("attivo")
             cb_on.setChecked(getattr(v, "enabled", True))
             cb_on.toggled.connect(
                 lambda val, vc=v: self._set_safe(vc, "enabled", val)
@@ -325,7 +325,7 @@ class MappingPanel(QWidget):
             band_cb.currentTextChanged.connect(
                 lambda t, vc=v: self._set_safe(vc, "band", t)
             )
-            grid.addWidget(QLabel("band"), 0, 1)
+            grid.addWidget(QLabel("banda"), 0, 1)
             grid.addWidget(band_cb, 0, 2)
 
             cc_sb = QSpinBox()
@@ -343,10 +343,10 @@ class MappingPanel(QWidget):
             midi_sb.valueChanged.connect(
                 lambda val, vc=v: self._set_safe(vc, "midi_channel", val - 1)
             )
-            grid.addWidget(QLabel("midi ch"), 1, 1)
+            grid.addWidget(QLabel("canale midi"), 1, 1)
             grid.addWidget(midi_sb, 1, 2)
 
-            inv_cb = QCheckBox("invert")
+            inv_cb = QCheckBox("inverti")
             inv_cb.setChecked(getattr(v, "invert", False))
             inv_cb.toggled.connect(
                 lambda val, vc=v: self._set_safe(vc, "invert", val)
@@ -360,7 +360,7 @@ class MappingPanel(QWidget):
             sm.valueChanged.connect(
                 lambda val, vc=v: self._set_safe(vc, "smoothing", val)
             )
-            grid.addWidget(QLabel("smooth"), 1, 4)
+            grid.addWidget(QLabel("morbidezza"), 1, 4)
             grid.addWidget(sm, 1, 5)
 
             layout.addWidget(box)
@@ -372,13 +372,13 @@ class MappingPanel(QWidget):
         w = QWidget()
         layout = QFormLayout(w)
         if s is None:
-            layout.addRow(QLabel("threshold strategy not in this bundle."))
+            layout.addRow(QLabel("strategia soglia non presente in questa configurazione."))
             return w
 
         enable = QCheckBox()
         enable.setChecked(getattr(s, "enabled", False))
         enable.toggled.connect(lambda v: self._set_safe(s, "enabled", v))
-        layout.addRow("ENABLED", enable)
+        layout.addRow("ATTIVA", enable)
 
         band_cb = QComboBox()
         band_cb.addItems(_BANDS)
@@ -386,7 +386,7 @@ class MappingPanel(QWidget):
         band_cb.currentTextChanged.connect(
             lambda t: self._set_safe(s, "band", t)
         )
-        layout.addRow("band", band_cb)
+        layout.addRow("banda", band_cb)
 
         thr = QDoubleSpinBox()
         thr.setRange(0.0, 10_000.0)
@@ -395,13 +395,13 @@ class MappingPanel(QWidget):
         thr.valueChanged.connect(
             lambda v: self._set_safe(s, "threshold_uv2", v)
         )
-        layout.addRow("threshold", thr)
+        layout.addRow("soglia", thr)
 
         ch = QSpinBox()
         ch.setRange(1, 16)   # 1-16 like Ableton (stored 0-15)
         ch.setValue(int(getattr(s, "channel", 9)) + 1)
         ch.valueChanged.connect(lambda v: self._set_safe(s, "channel", v - 1))
-        layout.addRow("midi channel", ch)
+        layout.addRow("canale midi", ch)
 
         nl = _note_length_spinbox(getattr(s, "note_length_seconds", 0.015))
         nl.valueChanged.connect(
@@ -409,7 +409,7 @@ class MappingPanel(QWidget):
                 s, "note_length_seconds", _note_length_seconds(sb)
             )
         )
-        layout.addRow("note length", nl)
+        layout.addRow("durata nota", nl)
         return w
 
     def _build_coherence_tab(self) -> QWidget:
@@ -417,13 +417,13 @@ class MappingPanel(QWidget):
         w = QWidget()
         layout = QFormLayout(w)
         if s is None:
-            layout.addRow(QLabel("coherence strategy not in this bundle."))
+            layout.addRow(QLabel("strategia coerenza non presente in questa configurazione."))
             return w
 
         enable = QCheckBox()
         enable.setChecked(getattr(s, "enabled", False))
         enable.toggled.connect(lambda v: self._set_safe(s, "enabled", v))
-        layout.addRow("ENABLED", enable)
+        layout.addRow("ATTIVA", enable)
 
         band_cb = QComboBox()
         band_cb.addItems(_BANDS)
@@ -431,7 +431,7 @@ class MappingPanel(QWidget):
         band_cb.currentTextChanged.connect(
             lambda t: self._set_safe(s, "band", t)
         )
-        layout.addRow("band", band_cb)
+        layout.addRow("banda", band_cb)
 
         cc = QSpinBox()
         cc.setRange(0, 127)
@@ -443,14 +443,14 @@ class MappingPanel(QWidget):
         ch.setRange(1, 16)   # 1-16 like Ableton (stored 0-15)
         ch.setValue(int(getattr(s, "channel", 10)) + 1)
         ch.valueChanged.connect(lambda v: self._set_safe(s, "channel", v - 1))
-        layout.addRow("midi channel", ch)
+        layout.addRow("canale midi", ch)
 
         sm = QDoubleSpinBox()
         sm.setRange(0.0, 0.99)
         sm.setSingleStep(0.05)
         sm.setValue(float(getattr(s, "smoothing", 0.6)))
         sm.valueChanged.connect(lambda v: self._set_safe(s, "smoothing", v))
-        layout.addRow("smoothing", sm)
+        layout.addRow("morbidezza", sm)
         return w
 
     def _build_markov_tab(self) -> QWidget:
@@ -458,13 +458,13 @@ class MappingPanel(QWidget):
         w = QWidget()
         layout = QFormLayout(w)
         if s is None:
-            layout.addRow(QLabel("markov strategy not in this bundle."))
+            layout.addRow(QLabel("strategia markov non presente in questa configurazione."))
             return w
 
         enable = QCheckBox()
         enable.setChecked(getattr(s, "enabled", True))
         enable.toggled.connect(lambda v: self._set_safe(s, "enabled", v))
-        layout.addRow("ENABLED", enable)
+        layout.addRow("ATTIVA", enable)
 
         scale_cb = QComboBox()
         scale_cb.addItems(sorted(SCALES.keys()))
@@ -472,7 +472,7 @@ class MappingPanel(QWidget):
         scale_cb.currentTextChanged.connect(
             lambda t: self._set_safe(s, "scale", t)
         )
-        layout.addRow("scale", scale_cb)
+        layout.addRow("scala", scale_cb)
 
         root_cb = QComboBox()
         root_cb.addItems(sorted(NOTE_NAME_TO_PC.keys()))
@@ -480,13 +480,13 @@ class MappingPanel(QWidget):
         root_cb.currentTextChanged.connect(
             lambda t: self._set_safe(s, "root", t)
         )
-        layout.addRow("root", root_cb)
+        layout.addRow("tonica", root_cb)
 
         ch = QSpinBox()
         ch.setRange(1, 16)   # 1-16 like Ableton (stored 0-15)
         ch.setValue(int(getattr(s, "channel", 8)) + 1)
         ch.valueChanged.connect(lambda v: self._set_safe(s, "channel", v - 1))
-        layout.addRow("midi channel", ch)
+        layout.addRow("canale midi", ch)
 
         density = QSpinBox()
         density.setRange(1, 16)
@@ -494,7 +494,7 @@ class MappingPanel(QWidget):
         density.valueChanged.connect(
             lambda v: self._set_safe(s, "max_notes_per_window", v)
         )
-        layout.addRow("max notes/win", density)
+        layout.addRow("note max/finestra", density)
 
         mk_interval = QDoubleSpinBox()
         mk_interval.setRange(0.0, 60.0)
@@ -503,12 +503,12 @@ class MappingPanel(QWidget):
         mk_interval.setSuffix(" s")
         mk_interval.setValue(float(getattr(s, "min_interval_seconds", 2.5)))
         mk_interval.setToolTip(
-            "Min seconds between Markov phrases. Higher = sparser."
+            "Secondi minimi fra due frasi Markov. Più alto = più rado."
         )
         mk_interval.valueChanged.connect(
             lambda v: self._set_safe(s, "min_interval_seconds", float(v))
         )
-        layout.addRow("min interval", mk_interval)
+        layout.addRow("intervallo minimo", mk_interval)
 
         nl = _note_length_spinbox(getattr(s, "note_length_seconds", 0.015))
         nl.valueChanged.connect(
@@ -516,7 +516,7 @@ class MappingPanel(QWidget):
                 s, "note_length_seconds", _note_length_seconds(sb)
             )
         )
-        layout.addRow("note length", nl)
+        layout.addRow("durata nota", nl)
         return w
 
     def _build_clip_tab(self) -> QWidget:
@@ -528,19 +528,19 @@ class MappingPanel(QWidget):
 
         layout = QVBoxLayout(wrap)
         if s is None:
-            layout.addWidget(QLabel("clips strategy not in this bundle."))
+            layout.addWidget(QLabel("strategia clip non presente in questa configurazione."))
             return scroll
 
-        enable = QCheckBox("ENABLE CLIP LAUNCHER")
+        enable = QCheckBox("ATTIVA LANCIA-CLIP")
         enable.setChecked(getattr(s, "enabled", False))
         enable.toggled.connect(lambda v: self._set_safe(s, "enabled", v))
         layout.addWidget(enable)
 
         for i, rule in enumerate(getattr(s, "rules", []) or []):
-            box = QGroupBox(f"RULE {i}")
+            box = QGroupBox(f"REGOLA {i}")
             grid = QGridLayout(box)
 
-            on_cb = QCheckBox("on")
+            on_cb = QCheckBox("attivo")
             on_cb.setChecked(getattr(rule, "enabled", True))
             on_cb.toggled.connect(
                 lambda v, r=rule: self._set_safe(r, "enabled", v)
@@ -553,7 +553,7 @@ class MappingPanel(QWidget):
             ch_sb.valueChanged.connect(
                 lambda v, r=rule: self._set_safe(r, "eeg_channel", v)
             )
-            grid.addWidget(QLabel("eeg ch"), 0, 1)
+            grid.addWidget(QLabel("canale eeg"), 0, 1)
             grid.addWidget(ch_sb, 0, 2)
 
             band_cb = QComboBox()
@@ -562,7 +562,7 @@ class MappingPanel(QWidget):
             band_cb.currentTextChanged.connect(
                 lambda t, r=rule: self._set_safe(r, "band", t)
             )
-            grid.addWidget(QLabel("band"), 0, 3)
+            grid.addWidget(QLabel("banda"), 0, 3)
             grid.addWidget(band_cb, 0, 4)
 
             note_sb = QSpinBox()
@@ -571,7 +571,7 @@ class MappingPanel(QWidget):
             note_sb.valueChanged.connect(
                 lambda v, r=rule: self._set_safe(r, "midi_note", v)
             )
-            grid.addWidget(QLabel("note"), 1, 1)
+            grid.addWidget(QLabel("nota"), 1, 1)
             grid.addWidget(note_sb, 1, 2)
 
             mc = QSpinBox()
@@ -580,7 +580,7 @@ class MappingPanel(QWidget):
             mc.valueChanged.connect(
                 lambda v, r=rule: self._set_safe(r, "midi_channel", v - 1)
             )
-            grid.addWidget(QLabel("midi ch"), 1, 3)
+            grid.addWidget(QLabel("canale midi"), 1, 3)
             grid.addWidget(mc, 1, 4)
 
             thr = QDoubleSpinBox()
@@ -589,7 +589,7 @@ class MappingPanel(QWidget):
             thr.valueChanged.connect(
                 lambda v, r=rule: self._set_safe(r, "threshold_uv2", v)
             )
-            grid.addWidget(QLabel("threshold"), 2, 1)
+            grid.addWidget(QLabel("soglia"), 2, 1)
             grid.addWidget(thr, 2, 2)
 
             layout.addWidget(box)

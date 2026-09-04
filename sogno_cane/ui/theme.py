@@ -151,6 +151,71 @@ QPushButton#DangerButton {{
 }}
 QPushButton#DangerButton:hover {{ background-color: #82F1FF; }}
 
+/* Call to action: the step the user must do next (e.g. connect MIDI). */
+QPushButton#CallToAction {{
+    color: {BG_DEEP};
+    background-color: {NEON_YELLOW};
+    border: 1px solid {NEON_YELLOW};
+}}
+QPushButton#CallToAction:hover {{ background-color: #FFEC9B; }}
+
+/* Segmented control: mutually exclusive source modes. */
+QPushButton#ModeButton {{
+    color: {TEXT_DIM};
+    background-color: transparent;
+    border: 1px solid {BORDER_DIM};
+    border-radius: 2px;
+    padding: 5px 10px;
+    font-weight: 700;
+    letter-spacing: 1px;
+}}
+QPushButton#ModeButton:hover {{
+    color: {ACCENT_CYAN};
+    border-color: {ACCENT_CYAN};
+    background-color: transparent;
+}}
+QPushButton#ModeButton:checked {{
+    color: {BG_DEEP};
+    background-color: {ACCENT_CYAN};
+    border-color: {ACCENT_CYAN};
+}}
+
+/* Per-device identity: the two panels must never be confused on stage. */
+QLabel#SubHeaderHuman {{
+    color: {ACCENT_CYAN};
+    font-size: 15pt;
+    font-weight: 700;
+    letter-spacing: 3px;
+}}
+QLabel#SubHeaderDog {{
+    color: {NEON_ORANGE};
+    font-size: 15pt;
+    font-weight: 700;
+    letter-spacing: 3px;
+}}
+QWidget#DevicePanelHuman {{
+    border-left: 3px solid {ACCENT_CYAN};
+    background-color: rgba(91, 233, 255, 10);
+}}
+QWidget#DevicePanelDog {{
+    border-left: 3px solid {NEON_ORANGE};
+    background-color: rgba(255, 157, 69, 10);
+}}
+
+/* Health strip: readable at a glance, not 8pt grey. */
+QLabel#HealthLine {{
+    font-family: "JetBrains Mono", "Consolas", "DejaVu Sans Mono", monospace;
+    font-size: 9pt;
+    letter-spacing: 0;
+    padding: 2px 0;
+}}
+
+QLabel#VersionTag {{
+    color: {TEXT_DIM};
+    font-size: 9pt;
+    letter-spacing: 1px;
+}}
+
 QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit {{
     background-color: {BG_PANEL_HEX};
     color: {ACCENT_CYAN};

@@ -83,6 +83,41 @@ def _pending_path() -> str:
     return os.path.join(updates_dir(), "pending.json")
 
 
+def _applied_path() -> str:
+    return os.path.join(updates_dir(), "last_applied.json")
+
+
+def record_applied(version: str, notes: str = "") -> None:
+    """Leave a one-shot note that an update was installed.
+
+    Without this an update is invisible: the app looks byte-identical to the
+    user, who reasonably concludes nothing happened. ``portable/
+    update_apply.py`` writes the same file when it swaps the package at
+    launch.
+    """
+    try:
+        with open(_applied_path(), "w", encoding="utf-8") as f:
+            json.dump({"version": version, "notes": notes}, f, indent=2)
+    except Exception:
+        pass
+
+
+def take_applied_notice() -> Optional[dict]:
+    """Return the pending "what's new" note once, then forget it."""
+    try:
+        with open(_applied_path(), encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return None
+    try:
+        os.unlink(_applied_path())
+    except Exception:
+        pass
+    if not isinstance(data, dict) or not data.get("version"):
+        return None
+    return data
+
+
 # --------------------------------------------------------------------------- #
 # Version comparison                                                          #
 # --------------------------------------------------------------------------- #
@@ -248,6 +283,7 @@ def apply_pending_update(target_dir: str) -> bool:
             shutil.move(backup, target_dir)
         raise
     shutil.rmtree(backup, ignore_errors=True)
+    record_applied(pend.get("version", ""), pend.get("notes", ""))
     clear_pending()
     return True
 

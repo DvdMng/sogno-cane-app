@@ -386,7 +386,7 @@ def test_device_panel_connects_to_a_live_stream(tmp_path, monkeypatch):
             time.sleep(0.05)
         assert panel.live_source.has_signal
         panel._update_stats()
-        assert "eeg" in panel._stats.text()
+        assert "EEG" in panel._stats.text()
         assert "LIVE" in panel._source_lbl.text()
         # Switching back to the simulator must free the socket.
         panel._use_simulator()

@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.8.0 — interfaccia leggibile, in italiano, che dice la verità
+Nasce da un problema concreto: dopo aver installato la 0.7.0 non si capiva
+se fosse cambiato qualcosa. Non era un difetto dell'aggiornamento — era
+l'interfaccia che non lo diceva.
+
+- **La versione è sempre visibile**: nel titolo della finestra e accanto al
+  pulsante AGGIORNAMENTI. Prima si scopriva solo cliccando.
+- **"Cosa è cambiato" dopo ogni aggiornamento**: all'avvio successivo appare
+  una finestrella con versione e note di rilascio. Le note venivano già
+  scaricate e poi buttate via; ora `update_apply.py` le lascia in
+  `updates/last_applied.json` e l'app le mostra una volta sola.
+- **Avviare senza MIDI non è più un silenzio inspiegabile**: lo stato dice
+  "NESSUNA PORTA MIDI — non uscirà alcun suono" e la riga di salute lo
+  ripete. Niente finestra modale: bloccare l'utente durante una
+  performance sarebbe peggio del problema.
+- **Riga di salute leggibile e a colori**: prima 8pt grigio spento, ora
+  monospaziata e a colpo d'occhio — verde quando entra segnale ed esce
+  MIDI, rosa quando qualcosa non va (nessun dato EEG, MIDI scollegato,
+  invii falliti), grigia da fermo.
+- **COLLEGA è un richiamo all'azione** (giallo) finché il MIDI non è
+  collegato, poi torna un pulsante qualsiasi: la gerarchia rispecchia
+  l'ordine reale delle operazioni.
+- **Le tre sorgenti sono un controllo segmentato** (SIMULATORE / FILE /
+  EEG DAL VIVO): quella attiva è illuminata, non più da indovinare leggendo
+  un'etichetta. Se annulli la scelta del file o la connessione fallisce, il
+  controllo torna a dire la verità invece di mentire.
+- **UMANO e CANE si distinguono a colpo d'occhio**: banda colorata a
+  sinistra e titolo ciano/arancio. Prima erano gemelli identici.
+- **Il monitor ATTIVITÀ MIDI non ruba più spazio**: era fisso a 120px anche
+  da vuoto; ora sta in un divisorio trascinabile e parte piccolo, lasciando
+  la scena alla forma d'onda.
+- **Tutta l'interfaccia è in italiano** — pulsanti, stati, messaggi, aiuto,
+  schede di mappatura e archivio.
+- Test: +10 sulle nuove garanzie UX (visibilità versione, avviso di
+  aggiornamento a colpo singolo, coerenza del controllo segmentato, avviso
+  MIDI non bloccante) — **186 totali**.
+
 ## 0.7.0 — EEG veri, in diretta
 Fino alla 0.6.0 l'app sapeva solo **simulare** un EEG o **rileggere un file**:
 non esisteva alcun percorso di acquisizione dal vivo (nessun socket, nessuna

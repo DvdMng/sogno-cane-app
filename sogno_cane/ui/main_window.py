@@ -43,7 +43,9 @@ class MainWindow(QMainWindow):
 
     def __init__(self, archive: Archive | None = None) -> None:
         super().__init__()
-        self.setWindowTitle("SOGNO_CANE")
+        # The version belongs where the user can always see it: not knowing
+        # which build is running makes every update look like a no-op.
+        self.setWindowTitle(f"SOGNO_CANE {__version__}")
         try:
             self.setWindowIcon(app_icon())
         except Exception:
@@ -68,9 +70,9 @@ class MainWindow(QMainWindow):
         # Top-level tabs: STUDIO (live) / MAPPING (config) / ARCHIVE.
         self._tabs = QTabWidget()
         self._tabs.addTab(self._build_studio(), "STUDIO")
-        self._tabs.addTab(self._build_mapping(), "MAPPING")
+        self._tabs.addTab(self._build_mapping(), "MAPPATURA")
         self._archive_panel = ArchivePanel(self._archive)
-        self._tabs.addTab(self._archive_panel, "ARCHIVE")
+        self._tabs.addTab(self._archive_panel, "ARCHIVIO")
         outer.addWidget(self._tabs, 1)
 
         # Wire archive <-> devices.
@@ -94,7 +96,7 @@ class MainWindow(QMainWindow):
 
         self._restore_settings()
         self.statusBar().showMessage(
-            "ready — recordings are stored in " + self._archive.root
+            "pronto — le registrazioni stanno in " + self._archive.root
         )
 
         # Online auto-update wiring.
@@ -103,6 +105,7 @@ class MainWindow(QMainWindow):
         self._update_staged.connect(self._on_update_staged)
         self._update_failed.connect(self._on_update_failed)
         self._update_none.connect(self._on_update_none)
+        self._announce_applied_update()
         self._notify_pending_update()
         if updater.update_url() and updater.auto_update_enabled():
             self._start_update_check(manual=False)
@@ -121,25 +124,40 @@ class MainWindow(QMainWindow):
         v.addLayout(self._build_transport())
 
         # Device panels — these get the lion's share of the height.
-        self._human = DevicePanel("HUMAN", HUMAN_PROFILE, archive=self._archive)
-        self._dog = DevicePanel("DOG", DOG_PROFILE, archive=self._archive)
+        self._human = DevicePanel("UMANO", HUMAN_PROFILE, archive=self._archive)
+        self._dog = DevicePanel("CANE", DOG_PROFILE, archive=self._archive)
         top = QSplitter(Qt.Orientation.Horizontal)
         top.setHandleWidth(8)
         top.addWidget(self._human)
         top.addWidget(self._dog)
         top.setStretchFactor(0, 1)
         top.setStretchFactor(1, 1)
-        v.addWidget(top, 1)
 
-        # Compact MIDI activity monitor strip along the bottom.
-        mon_label = QLabel("MIDI ACTIVITY")
+        # MIDI activity monitor. It used to eat a fixed 120 px of the panel
+        # area whether or not anything was happening; now it shares a
+        # draggable splitter with the devices and starts small, so the
+        # waveforms (the actual centrepiece) get the room.
+        mon_wrap = QWidget()
+        mon_v = QVBoxLayout(mon_wrap)
+        mon_v.setContentsMargins(0, 0, 0, 0)
+        mon_v.setSpacing(2)
+        mon_label = QLabel("ATTIVITÀ MIDI")
         mon_label.setStyleSheet(
             "color: #7F7298; font-size: 8pt; letter-spacing: 2px;"
         )
-        v.addWidget(mon_label)
+        mon_v.addWidget(mon_label)
         self._monitor = MidiMonitor()
-        self._monitor.setFixedHeight(120)
-        v.addWidget(self._monitor)
+        self._monitor.setMinimumHeight(48)
+        mon_v.addWidget(self._monitor, 1)
+
+        self._studio_split = QSplitter(Qt.Orientation.Vertical)
+        self._studio_split.setHandleWidth(8)
+        self._studio_split.addWidget(top)
+        self._studio_split.addWidget(mon_wrap)
+        self._studio_split.setStretchFactor(0, 5)
+        self._studio_split.setStretchFactor(1, 1)
+        self._studio_split.setSizes([760, 110])
+        v.addWidget(self._studio_split, 1)
 
         # Wire device events.
         self._human.packet_received.connect(self._on_human_packet)
@@ -157,18 +175,18 @@ class MainWindow(QMainWindow):
         # Config save/load bar.
         bar = QHBoxLayout()
         hint = QLabel(
-            "Configure how each device's EEG drives MIDI. MIDI channels are "
-            "1–16 (same as Ableton). Save the whole setup as a configuration."
+            "Come l'EEG di ogni dispositivo pilota il MIDI. I canali MIDI sono "
+            "1–16 (come in Ableton). Puoi salvare tutto come configurazione."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #7F7298; padding: 4px 2px;")
         bar.addWidget(hint, 1)
-        save_btn = QPushButton("SAVE CONFIG")
-        save_btn.setToolTip("Save the complete configuration (both devices).")
+        save_btn = QPushButton("SALVA CONFIG")
+        save_btn.setToolTip("Salva l'intera configurazione (entrambi i dispositivi).")
         save_btn.clicked.connect(self._save_config)
         bar.addWidget(save_btn)
-        load_btn = QPushButton("LOAD CONFIG")
-        load_btn.setToolTip("Load a saved configuration.")
+        load_btn = QPushButton("CARICA CONFIG")
+        load_btn.setToolTip("Carica una configurazione salvata.")
         load_btn.clicked.connect(self._load_config)
         bar.addWidget(load_btn)
         v.addLayout(bar)
@@ -182,33 +200,39 @@ class MainWindow(QMainWindow):
         """(Re)build the per-device mapping editors bound to the live bundles."""
         tabs = self._mapping_tabs
         tabs.clear()
-        tabs.addTab(MappingPanel(self._human.bundle, "HUMAN MAPPING"), "HUMAN")
-        tabs.addTab(MappingPanel(self._dog.bundle, "DOG MAPPING"), "DOG")
+        tabs.addTab(MappingPanel(self._human.bundle, "MAPPATURA UMANO"), "UMANO")
+        tabs.addTab(MappingPanel(self._dog.bundle, "MAPPATURA CANE"), "CANE")
 
     def _build_transport(self) -> QHBoxLayout:
         bar = QHBoxLayout()
         bar.setSpacing(10)
-        lbl = QLabel("TRANSPORT")
+        lbl = QLabel("TRASPORTO")
         lbl.setStyleSheet("font-weight: 700; letter-spacing: 3px;")
         bar.addWidget(lbl)
-        start_all = QPushButton("▶ START ALL")
+        start_all = QPushButton("AVVIA TUTTO")
         start_all.clicked.connect(self._start_all)
         bar.addWidget(start_all)
-        stop_all = QPushButton("■ STOP ALL")
+        stop_all = QPushButton("FERMA TUTTO")
         stop_all.clicked.connect(self._stop_all)
         bar.addWidget(stop_all)
-        panic = QPushButton("✸ PANIC")
-        panic.setToolTip("Send All-Notes-Off on every MIDI channel.")
+        panic = QPushButton("PANIC")
+        panic.setToolTip("Manda All-Notes-Off su tutti i canali MIDI.")
         panic.clicked.connect(self._panic)
         bar.addWidget(panic)
         bar.addStretch(1)
-        self._update_btn = QPushButton("UPDATES")
-        self._update_btn.setToolTip("Check online for a newer version")
+        self._version_lbl = QLabel(f"v{__version__}")
+        self._version_lbl.setObjectName("VersionTag")
+        self._version_lbl.setToolTip(
+            "Versione installata. Premi AGGIORNAMENTI per cercarne una nuova."
+        )
+        bar.addWidget(self._version_lbl)
+        self._update_btn = QPushButton("AGGIORNAMENTI")
+        self._update_btn.setToolTip("Cerca online una versione più recente")
         self._update_btn.clicked.connect(lambda: self._start_update_check(True))
         bar.addWidget(self._update_btn)
         help_btn = QPushButton("?")
         help_btn.setFixedWidth(36)
-        help_btn.setToolTip("Quick help")
+        help_btn.setToolTip("Aiuto rapido")
         help_btn.clicked.connect(self._show_help)
         bar.addWidget(help_btn)
         return bar
@@ -230,38 +254,48 @@ class MainWindow(QMainWindow):
     def _panic(self) -> None:
         self._human.panic()
         self._dog.panic()
-        self.statusBar().showMessage("PANIC — all notes off", 2000)
+        self.statusBar().showMessage("PANIC — tutte le note spente", 2000)
 
     def _show_help(self) -> None:
         from PySide6.QtWidgets import QMessageBox
         QMessageBox.information(
-            self, "SOGNO_CANE — quick help",
-            "STUDIO\n"
-            "  • Pick a PROFILE (human/dog) per panel.\n"
-            "  • CONNECT a MIDI port (install loopMIDI on Windows).\n"
-            "  • START streams the simulator; LOAD FILE plays a recording\n"
-            "    (CSV / EDF / BDF / npz) through the same mapping.\n"
-            "  • LIVE EEG connects a real Unicorn. Start g.tec's sender\n"
-            "    first (BCI Core Recorder → Settings → Network → 'Sending\n"
-            "    data via UDP', default port 1001, or Unicorn Suite →\n"
-            "    DevTools → UnicornUDP.exe), then press LIVE EEG: port and\n"
-            "    channel layout are detected automatically. With two\n"
-            "    headsets give each one its own port (e.g. 1001 human,\n"
-            "    1002 dog).\n"
-            "  • ● REC captures the incoming signal to the archive.\n"
-            "  • Tune musicality in the mapping tabs (interval / hold /\n"
-            "    change threshold control how sparse each voice is;\n"
-            "    'note length' sets how long each note sounds — 15 ms\n"
-            "    default for envelope triggers, 0 = HOLD for legato;\n"
-            "    'max silence' retriggers a voice that stayed quiet too\n"
-            "    long, so no MIDI channel ever goes dead).\n\n"
-            "ARCHIVE\n"
-            "  • Rename, CUT a time range, EXPORT CSV, DELETE, or\n"
-            "    LOAD a recording back into a device for playback.",
+            self, "SOGNO_CANE — guida rapida",
+            "L'ORDINE GIUSTO\n"
+            "  1. Scegli il PROFILO (umano / cane) su ogni pannello.\n"
+            "  2. Scegli la porta MIDI e premi COLLEGA (su Windows serve\n"
+            "     loopMIDI). Finché il pulsante è giallo il suono non esce.\n"
+            "  3. Scegli la SORGENTE: SIMULATORE, FILE o EEG DAL VIVO.\n"
+            "  4. Premi AVVIA.\n\n"
+            "SORGENTI\n"
+            "  • SIMULATORE — segnale sintetico, per provare senza cuffie.\n"
+            "  • FILE — riproduce una registrazione (CSV / EDF / BDF / npz)\n"
+            "    attraverso la stessa mappatura musicale.\n"
+            "  • EEG DAL VIVO — collega un Unicorn vero. Avvia prima il\n"
+            "    programma g.tec (BCI Core Recorder → Settings → Network →\n"
+            "    'Sending data via UDP', porta 1001, oppure Unicorn Suite →\n"
+            "    DevTools → UnicornUDP.exe), poi premi EEG DAL VIVO: porta e\n"
+            "    formato dei canali vengono riconosciuti da soli. Con due\n"
+            "    cuffie dai una porta a ciascuna (es. 1001 umano, 1002 cane).\n\n"
+            "LA RIGA DI STATO IN BASSO AL PANNELLO\n"
+            "  Dice sempre la verità su cosa entra e cosa esce: verde tutto\n"
+            "  a posto, rosa qualcosa non va (nessun dato EEG, MIDI non\n"
+            "  collegato, invii falliti).\n\n"
+            "REGISTRARE E RIASCOLTARE\n"
+            "  • ● REGISTRA cattura il segnale in arrivo nell'archivio.\n"
+            "  • Dalla scheda ARCHIVIO puoi rinominare, tagliare un\n"
+            "    intervallo, esportare in CSV, eliminare o ricaricare una\n"
+            "    registrazione in un dispositivo.\n\n"
+            "MUSICALITÀ (scheda MAPPATURA)\n"
+            "  • intervallo / durata minima / soglia di cambiamento\n"
+            "    regolano quanto è rada ogni voce;\n"
+            "  • 'note length' quanto dura ogni nota (15 ms = trigger per\n"
+            "    gli inviluppi, 0 = HOLD legato);\n"
+            "  • 'max silence' fa ripartire una voce rimasta muta troppo a\n"
+            "    lungo, così nessun canale MIDI muore.",
         )
 
     def _on_tab_changed(self, idx: int) -> None:
-        if self._tabs.tabText(idx) == "ARCHIVE":
+        if self._tabs.tabText(idx) == "ARCHIVIO":
             self._archive_panel.refresh()
 
     # ------------------------------------------------------------------ #
@@ -272,9 +306,23 @@ class MainWindow(QMainWindow):
         pend = updater.has_pending_update()
         if pend:
             self.statusBar().showMessage(
-                f"Update {pend.get('version','?')} staged — restart to apply",
+                f"Aggiornamento {pend.get('version','?')} pronto — "
+                f"riavvia per installarlo",
                 8000,
             )
+
+    def _announce_applied_update(self) -> None:
+        """Tell the user, once, that the app just changed under their feet."""
+        notice = updater.take_applied_notice()
+        if not notice:
+            return
+        version = str(notice.get("version", "")).strip()
+        notes = str(notice.get("notes", "")).strip()
+        body = f"SOGNO_CANE è stato aggiornato alla versione {version}."
+        if notes:
+            body += f"\n\nCosa cambia:\n{notes}"
+        QMessageBox.information(self, "Aggiornamento installato", body)
+        self.statusBar().showMessage(f"Aggiornato alla versione {version}", 8000)
 
     def _start_update_check(self, manual: bool = False) -> None:
         if not updater.update_url():
@@ -289,7 +337,7 @@ class MainWindow(QMainWindow):
             return
         self._manual_update_check = manual
         if manual:
-            self.statusBar().showMessage("Checking for updates…", 4000)
+            self.statusBar().showMessage("Cerco aggiornamenti…", 4000)
         threading.Thread(target=self._check_thread, daemon=True).start()
 
     def _check_thread(self) -> None:
@@ -301,27 +349,27 @@ class MainWindow(QMainWindow):
 
     def _on_update_none(self) -> None:
         QMessageBox.information(
-            self, "Updates",
-            f"You are up to date (version {__version__}).",
+            self, "Aggiornamenti",
+            f"Sei aggiornato (versione {__version__}).",
         )
 
     def _on_update_available(self, info) -> None:
         auto = updater.auto_update_enabled()
         if auto and not self._manual_update_check:
             self.statusBar().showMessage(
-                f"Downloading update {info.version}…", 0
+                f"Scarico l'aggiornamento {info.version}…", 0
             )
             self._download_update(info)
             return
         notes = f"\n\n{info.notes}" if info.notes else ""
         if QMessageBox.question(
-            self, "Update available",
-            f"Version {info.version} is available "
-            f"(you have {__version__}).{notes}\n\n"
-            "Download now? It will be applied at the next launch.",
+            self, "Aggiornamento disponibile",
+            f"È disponibile la versione {info.version} "
+            f"(tu hai la {__version__}).{notes}\n\n"
+            "La scarico adesso? Verrà installata al prossimo avvio.",
         ) == QMessageBox.StandardButton.Yes:
             self.statusBar().showMessage(
-                f"Downloading update {info.version}…", 0
+                f"Scarico l'aggiornamento {info.version}…", 0
             )
             self._download_update(info)
 
@@ -336,17 +384,17 @@ class MainWindow(QMainWindow):
 
     def _on_update_staged(self, version: str) -> None:
         self.statusBar().showMessage(
-            f"Update {version} ready — applies on next launch", 0
+            f"Aggiornamento {version} pronto — si installa al prossimo avvio", 0
         )
         QMessageBox.information(
-            self, "Update ready",
-            f"Version {version} has been downloaded.\n\n"
-            "It will be installed automatically the next time you start "
-            "SOGNO_CANE (via START.bat).",
+            self, "Aggiornamento pronto",
+            f"La versione {version} è stata scaricata.\n\n"
+            "Verrà installata automaticamente al prossimo avvio di "
+            "SOGNO_CANE (da START.bat).",
         )
 
     def _on_update_failed(self, msg: str) -> None:
-        self.statusBar().showMessage(f"Update failed: {msg}", 8000)
+        self.statusBar().showMessage(f"Aggiornamento fallito: {msg}", 8000)
 
     # ------------------------------------------------------------------ #
     # Configurations (save / load the complete mapping setup)            #
@@ -365,7 +413,7 @@ class MainWindow(QMainWindow):
 
     def _save_config(self) -> None:
         name, ok = QInputDialog.getText(
-            self, "Save configuration", "Configuration name:",
+            self, "Salva configurazione", "Nome della configurazione:",
             text="my_config",
         )
         if not ok or not name.strip():
@@ -377,22 +425,22 @@ class MainWindow(QMainWindow):
         try:
             cfg = appconfig.build_config(self._collect_devices())
             appconfig.save_config(path, cfg)
-            self.statusBar().showMessage(f"Saved configuration: {path}", 6000)
+            self.statusBar().showMessage(f"Configurazione salvata: {path}", 6000)
         except Exception as e:
-            QMessageBox.warning(self, "Save failed", str(e))
+            QMessageBox.warning(self, "Salvataggio fallito", str(e))
 
     def _load_config(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "Load configuration",
+            self, "Carica configurazione",
             appconfig.configs_dir(),
-            "SOGNO_CANE config (*.json);;All files (*)",
+            "Configurazione SOGNO_CANE (*.json);;Tutti i file (*)",
         )
         if not path:
             return
         try:
             data = appconfig.load_config(path)
         except Exception as e:
-            QMessageBox.warning(self, "Load failed", str(e))
+            QMessageBox.warning(self, "Caricamento fallito", str(e))
             return
         devs = data.get("devices", {})
         for key, dev in (("human", self._human), ("dog", self._dog)):
@@ -411,7 +459,7 @@ class MainWindow(QMainWindow):
                 dev.set_port_name(port)
         self._rebuild_mapping_tabs()
         self.statusBar().showMessage(
-            f"Loaded configuration: {os.path.basename(path)}", 6000
+            f"Configurazione caricata: {os.path.basename(path)}", 6000
         )
 
     # ------------------------------------------------------------------ #

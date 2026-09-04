@@ -60,7 +60,7 @@ class ArchivePanel(QWidget):
         outer.setContentsMargins(12, 12, 12, 12)
         outer.setSpacing(10)
 
-        title = QLabel("RECORDING ARCHIVE")
+        title = QLabel("ARCHIVIO REGISTRAZIONI")
         title.setObjectName("SubHeader")
         outer.addWidget(title)
 
@@ -95,19 +95,19 @@ class ArchivePanel(QWidget):
 
         # Trim controls.
         trim_row = QHBoxLayout()
-        trim_row.addWidget(QLabel("TRIM  start"))
+        trim_row.addWidget(QLabel("TAGLIA  da"))
         self._trim_start = QDoubleSpinBox()
         self._trim_start.setRange(0.0, 99999.0)
         self._trim_start.setSuffix(" s")
         self._trim_start.setDecimals(2)
         trim_row.addWidget(self._trim_start)
-        trim_row.addWidget(QLabel("end"))
+        trim_row.addWidget(QLabel("a"))
         self._trim_end = QDoubleSpinBox()
         self._trim_end.setRange(0.0, 99999.0)
         self._trim_end.setSuffix(" s")
         self._trim_end.setDecimals(2)
         trim_row.addWidget(self._trim_end)
-        self._trim_btn = QPushButton("CUT -> NEW")
+        self._trim_btn = QPushButton("TAGLIA -> NUOVA")
         self._trim_btn.setToolTip(
             "Save the selected [start, end) range as a new recording."
         )
@@ -118,25 +118,25 @@ class ArchivePanel(QWidget):
 
         # Action buttons.
         actions = QHBoxLayout()
-        self._rename_btn = QPushButton("RENAME")
+        self._rename_btn = QPushButton("RINOMINA")
         self._rename_btn.clicked.connect(self._do_rename)
         actions.addWidget(self._rename_btn)
-        self._csv_btn = QPushButton("EXPORT CSV")
+        self._csv_btn = QPushButton("ESPORTA CSV")
         self._csv_btn.clicked.connect(self._do_export_csv)
         actions.addWidget(self._csv_btn)
-        self._del_btn = QPushButton("DELETE")
+        self._del_btn = QPushButton("ELIMINA")
         self._del_btn.clicked.connect(self._do_delete)
         actions.addWidget(self._del_btn)
         actions.addStretch(1)
-        self._play_human_btn = QPushButton("LOAD → HUMAN")
+        self._play_human_btn = QPushButton("CARICA → UMANO")
         self._play_human_btn.clicked.connect(
             lambda: self._do_load("HUMAN")
         )
         actions.addWidget(self._play_human_btn)
-        self._play_dog_btn = QPushButton("LOAD → DOG")
+        self._play_dog_btn = QPushButton("CARICA → CANE")
         self._play_dog_btn.clicked.connect(lambda: self._do_load("DOG"))
         actions.addWidget(self._play_dog_btn)
-        self._refresh_btn = QPushButton("REFRESH")
+        self._refresh_btn = QPushButton("AGGIORNA")
         self._refresh_btn.clicked.connect(self.refresh)
         actions.addWidget(self._refresh_btn)
         outer.addLayout(actions)

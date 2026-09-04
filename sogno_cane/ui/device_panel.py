@@ -12,6 +12,7 @@ import os
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -93,18 +94,27 @@ class DevicePanel(QWidget):
         # MIDI health surfaced by the stats timer.
         self._midi_stall_shown = False
         self._known_reconnects = 0
+        self._no_midi_warned = False
 
         layout = QVBoxLayout(self)
         layout.setSpacing(6)
         layout.setContentsMargins(10, 6, 10, 8)
 
+        # Per-device identity: the two panels are otherwise identical twins,
+        # and picking the wrong one mid-performance is an easy mistake.
+        is_dog = "DOG" in title.upper() or "CANE" in title.upper()
+        self.setObjectName("DevicePanelDog" if is_dog else "DevicePanelHuman")
+        # Without this a plain QWidget silently ignores the stylesheet's
+        # background and border, and the accent stripe never appears.
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+
         # Header: title + live status on one line.
         header_row = QHBoxLayout()
         header = QLabel(title)
-        header.setObjectName("SubHeader")
+        header.setObjectName("SubHeaderDog" if is_dog else "SubHeaderHuman")
         header_row.addWidget(header)
         header_row.addStretch(1)
-        self._status = QLabel("IDLE")
+        self._status = QLabel("FERMO")
         self._status.setStyleSheet(f"color: {FG_DIM};")
         header_row.addWidget(self._status)
         layout.addLayout(header_row)
@@ -112,7 +122,7 @@ class DevicePanel(QWidget):
         # Row A: PROFILE + MIDI port + REFRESH + CONNECT.
         rowA = QHBoxLayout()
         rowA.setSpacing(6)
-        rowA.addWidget(QLabel("PROFILE"))
+        rowA.addWidget(QLabel("PROFILO"))
         self._profile_cb = QComboBox()
         self._profile_cb.addItems(list(ALL_PROFILES.keys()))
         self._profile_cb.setCurrentText(default_profile.name)
@@ -125,43 +135,70 @@ class DevicePanel(QWidget):
         self._port_cb.setEditable(False)
         self._port_cb.setMinimumWidth(130)
         rowA.addWidget(self._port_cb, 1)
-        self._refresh_btn = QPushButton("REFRESH")
-        self._refresh_btn.setToolTip("Rescan MIDI output ports")
+        self._refresh_btn = QPushButton("RICERCA")
+        self._refresh_btn.setToolTip("Rileggi l'elenco delle porte MIDI")
         self._refresh_btn.clicked.connect(self._refresh_ports)
         rowA.addWidget(self._refresh_btn)
-        self._connect_btn = QPushButton("CONNECT")
+        self._connect_btn = QPushButton("COLLEGA")
+        # Connecting MIDI is the prerequisite for hearing anything, so it
+        # asks for attention until it is done, then steps back.
+        self._connect_btn.setObjectName("CallToAction")
         self._connect_btn.clicked.connect(self._toggle_midi)
         rowA.addWidget(self._connect_btn)
         layout.addLayout(rowA)
 
-        # Row B: SOURCE label + LOAD FILE + USE SIM + loop.
+        # Row B: the three sources are mutually exclusive -> a segmented
+        # control, so the active one is visible without reading a label.
         rowB = QHBoxLayout()
         rowB.setSpacing(6)
-        rowB.addWidget(QLabel("SOURCE"))
-        self._source_lbl = QLabel("SIMULATOR")
+        rowB.addWidget(QLabel("SORGENTE"))
+        self._mode_group = QButtonGroup(self)
+        self._mode_group.setExclusive(True)
+
+        self._sim_btn = QPushButton("SIMULATORE")
+        self._sim_btn.setObjectName("ModeButton")
+        self._sim_btn.setCheckable(True)
+        self._sim_btn.setChecked(True)
+        self._sim_btn.setToolTip(
+            "Segnale EEG sintetico: per provare il set senza indossare nulla."
+        )
+        self._sim_btn.clicked.connect(self._on_mode_sim)
+
+        self._load_btn = QPushButton("FILE")
+        self._load_btn.setObjectName("ModeButton")
+        self._load_btn.setCheckable(True)
+        self._load_btn.setToolTip(
+            "Riproduci una registrazione EEG (CSV / EDF / BDF / npz) "
+            "attraverso la stessa mappatura."
+        )
+        self._load_btn.clicked.connect(self._on_mode_file)
+
+        self._live_btn = QPushButton("EEG DAL VIVO")
+        self._live_btn.setObjectName("ModeButton")
+        self._live_btn.setCheckable(True)
+        self._live_btn.setToolTip(
+            "Collega un Unicorn vero. Avvia prima il programma g.tec "
+            "(Unicorn BCI Core Recorder -> Settings -> Network -> 'Sending "
+            "data via UDP', oppure Unicorn Suite -> DevTools -> "
+            "UnicornUDP.exe), poi premi qui: porta e formato dei canali "
+            "vengono riconosciuti da soli."
+        )
+        self._live_btn.clicked.connect(self._on_mode_live)
+
+        for b in (self._sim_btn, self._load_btn, self._live_btn):
+            self._mode_group.addButton(b)
+            rowB.addWidget(b)
+
+        # Detail line: only says something the buttons cannot (which file,
+        # which UDP port). Empty for the simulator, where the lit segment
+        # is already the whole story.
+        self._source_lbl = QLabel("")
         self._source_lbl.setStyleSheet(f"color: {FG_LIME};")
         rowB.addWidget(self._source_lbl, 1)
-        self._load_btn = QPushButton("LOAD FILE")
-        self._load_btn.setToolTip(
-            "Play back an EEG file (CSV / EDF / BDF / npz) through the mapper."
+        self._loop_cb = QCheckBox("ripeti")
+        self._loop_cb.setToolTip(
+            "Riparti da capo quando il file finisce (solo sorgente FILE)."
         )
-        self._load_btn.clicked.connect(self._load_file)
-        rowB.addWidget(self._load_btn)
-        self._live_btn = QPushButton("LIVE EEG")
-        self._live_btn.setToolTip(
-            "Connect a real Unicorn headset. Start g.tec's sender first "
-            "(Unicorn BCI Core Recorder -> Settings -> Network -> 'Sending "
-            "data via UDP', or Unicorn Suite -> DevTools -> UnicornUDP.exe), "
-            "then press this: the port and channel layout are detected "
-            "automatically."
-        )
-        self._live_btn.clicked.connect(self._toggle_live)
-        rowB.addWidget(self._live_btn)
-        self._sim_btn = QPushButton("USE SIM")
-        self._sim_btn.clicked.connect(self._use_simulator)
-        self._sim_btn.setEnabled(False)
-        rowB.addWidget(self._sim_btn)
-        self._loop_cb = QCheckBox("loop")
         self._loop_cb.setChecked(True)
         self._loop_cb.toggled.connect(self._on_loop_toggled)
         rowB.addWidget(self._loop_cb)
@@ -178,14 +215,14 @@ class DevicePanel(QWidget):
         # Transport row: START + REC + recording timer.
         rowT = QHBoxLayout()
         rowT.setSpacing(6)
-        self._start_btn = QPushButton("START")
+        self._start_btn = QPushButton("AVVIA")
         self._start_btn.setObjectName("PrimaryButton")
         self._start_btn.clicked.connect(self._toggle_stream)
         rowT.addWidget(self._start_btn, 1)
-        self._rec_btn = QPushButton("● REC")
+        self._rec_btn = QPushButton("● REGISTRA")
         self._rec_btn.setToolTip(
-            "Record the incoming stream to the archive; rename/trim/export "
-            "it from the ARCHIVE tab."
+            "Registra il segnale in arrivo nell'archivio; poi lo rinomini, "
+            "tagli o esporti dalla scheda ARCHIVIO."
         )
         self._rec_btn.clicked.connect(self._toggle_record)
         rowT.addWidget(self._rec_btn)
@@ -195,9 +232,11 @@ class DevicePanel(QWidget):
         rowT.addWidget(self._rec_lbl)
         layout.addLayout(rowT)
 
-        # Live stats line.
+        # Health strip: on stage this answers "is it actually working?",
+        # so it is readable and colour-coded instead of 8pt grey.
         self._stats = QLabel("")
-        self._stats.setStyleSheet(f"color: {FG_DIM}; font-size: 8pt;")
+        self._stats.setObjectName("HealthLine")
+        self._stats.setStyleSheet(f"color: {FG_DIM};")
         layout.addWidget(self._stats)
 
         # Waveform repaint timer.
@@ -264,6 +303,14 @@ class DevicePanel(QWidget):
     # MIDI                                                                #
     # ------------------------------------------------------------------ #
 
+    @staticmethod
+    def _restyle(widget, object_name: str) -> None:
+        """Swap a widget's QSS identity and force Qt to repaint it."""
+        widget.setObjectName(object_name)
+        widget.setStyleSheet("")
+        widget.style().unpolish(widget)
+        widget.style().polish(widget)
+
     def _refresh_ports(self) -> None:
         if self._refresh_lock:
             return
@@ -273,7 +320,7 @@ class DevicePanel(QWidget):
             self._port_cb.clear()
             ports = list_output_ports()
             if not ports:
-                self._port_cb.addItem("(no MIDI ports - install loopMIDI)")
+                self._port_cb.addItem("(nessuna porta MIDI - installa loopMIDI)")
                 self._port_cb.setEnabled(False)
                 self._connect_btn.setEnabled(False)
             else:
@@ -288,18 +335,20 @@ class DevicePanel(QWidget):
     def _toggle_midi(self) -> None:
         if self._midi.is_open:
             self._midi.close()
-            self._connect_btn.setText("CONNECT")
-            self._set_status("MIDI: disconnected", color=FG_YELLOW)
+            self._connect_btn.setText("COLLEGA")
+            self._restyle(self._connect_btn, "CallToAction")
+            self._set_status("MIDI scollegato", color=FG_YELLOW)
             return
         name = self._port_cb.currentText()
-        if not name or name.startswith("(no MIDI"):
+        if not name or name.startswith("(nessuna porta"):
             return
         try:
             self._midi.open(name)
-            self._connect_btn.setText("DISCONNECT")
+            self._connect_btn.setText("SCOLLEGA")
+            self._restyle(self._connect_btn, "")
             self._set_status(f"MIDI: {name}", color=FG_GOOD)
         except Exception as e:
-            self._set_status(f"MIDI ERR: {e}", color=FG_MAGENTA)
+            self._set_status(f"ERRORE MIDI: {e}", color=FG_MAGENTA)
 
     # ------------------------------------------------------------------ #
     # Profile / source                                                   #
@@ -335,9 +384,9 @@ class DevicePanel(QWidget):
         patterns = " ".join(f"*{e}" for e in SUPPORTED_EXTENSIONS)
         start_dir = self._archive.root
         path, _ = QFileDialog.getOpenFileName(
-            self, "Load EEG file",
+            self, "Apri un file EEG",
             start_dir,
-            f"EEG files ({patterns});;All files (*)",
+            f"File EEG ({patterns});;Tutti i file (*)",
         )
         if not path:
             return
@@ -345,12 +394,12 @@ class DevicePanel(QWidget):
             loaded = load_eeg(path)
         except Exception as e:
             QMessageBox.warning(
-                self, "Load failed",
-                f"Could not read {os.path.basename(path)}:\n{e}",
+                self, "Apertura fallita",
+                f"Non riesco a leggere {os.path.basename(path)}:\n{e}",
             )
             return
         if loaded.n_samples == 0:
-            QMessageBox.warning(self, "Load failed", "File has no samples.")
+            QMessageBox.warning(self, "Apertura fallita", "Il file non contiene campioni.")
             return
         self.play_loaded(loaded)
 
@@ -359,13 +408,13 @@ class DevicePanel(QWidget):
         if self._live is not None:
             self._disconnect_live(restart=False)
         self._playback = loaded
-        self._sim_btn.setEnabled(True)
         self._source_lbl.setText(
-            f"FILE: {loaded.source_name}  "
+            f"{loaded.source_name}  "
             f"({loaded.n_channels}ch {loaded.sample_rate_hz:.0f}Hz "
             f"{loaded.duration_seconds:.0f}s)"
         )
         self._source_lbl.setStyleSheet(f"color: {FG_YELLOW};")
+        self._sync_mode_buttons()
         if self.is_streaming:
             self._stop_engine()
             self._start_engine()
@@ -375,12 +424,55 @@ class DevicePanel(QWidget):
     def _use_simulator(self) -> None:
         self._playback = None
         self._disconnect_live(restart=False)
-        self._sim_btn.setEnabled(False)
-        self._source_lbl.setText("SIMULATOR")
-        self._source_lbl.setStyleSheet(f"color: {FG_LIME};")
+        self._source_lbl.setText("")
+        self._sync_mode_buttons()
         if self.is_streaming:
             self._stop_engine()
             self._start_engine()
+
+    # ------------------------------------------------------------------ #
+    # Source mode (segmented control)                                    #
+    # ------------------------------------------------------------------ #
+
+    def current_mode(self) -> str:
+        """Which source is actually feeding the engine: sim / file / live."""
+        if self._live is not None:
+            return "live"
+        if self._playback is not None:
+            return "file"
+        return "sim"
+
+    def _sync_mode_buttons(self) -> None:
+        """Make the segmented control mirror reality.
+
+        The buttons express intent; this pulls them back to what actually
+        happened, so a cancelled file dialog or a failed live connection
+        cannot leave the UI claiming a source that is not running.
+        """
+        mode = self.current_mode()
+        for btn, name in (
+            (self._sim_btn, "sim"),
+            (self._load_btn, "file"),
+            (self._live_btn, "live"),
+        ):
+            btn.blockSignals(True)
+            btn.setChecked(name == mode)
+            btn.blockSignals(False)
+        self._loop_cb.setEnabled(mode == "file")
+
+    def _on_mode_sim(self) -> None:
+        if self.current_mode() != "sim":
+            self._use_simulator()
+        self._sync_mode_buttons()
+
+    def _on_mode_file(self) -> None:
+        self._load_file()          # may be cancelled by the user
+        self._sync_mode_buttons()
+
+    def _on_mode_live(self) -> None:
+        if self._live is None:
+            self._connect_live()   # may be cancelled or fail
+        self._sync_mode_buttons()
 
     # ------------------------------------------------------------------ #
     # Live acquisition (real Unicorn over UDP)                           #
@@ -412,28 +504,27 @@ class DevicePanel(QWidget):
             live.open()
         except OSError as exc:
             QMessageBox.warning(
-                self, "Live EEG",
-                f"Could not listen on UDP port {port}:\n{exc}\n\n"
-                f"Another application (or the other device panel) may "
-                f"already be using it. Pick a different port in the g.tec "
-                f"sender and try again.",
+                self, "EEG dal vivo",
+                f"Non riesco ad ascoltare sulla porta UDP {port}:\n{exc}\n\n"
+                f"Un'altra applicazione (o l'altro pannello) la sta gia' "
+                f"usando. Scegli una porta diversa nel programma g.tec "
+                f"e riprova.",
             )
             return
         self._live = live
         self._live_warned_no_data = False
         self._playback = None
-        self._sim_btn.setEnabled(True)
-        self._live_btn.setText("STOP LIVE")
         self._source_lbl.setText(f"LIVE UNICORN  (UDP {port})")
         self._source_lbl.setStyleSheet(f"color: {FG_GOOD};")
-        self._set_status(f"LIVE EEG on UDP {port}", color=FG_GOOD)
+        self._set_status(f"EEG DAL VIVO su UDP {port}", color=FG_GOOD)
+        self._sync_mode_buttons()
         if self.is_streaming:
             self._stop_engine()
         self._start_engine()
 
     def _discover_port(self) -> int | None:
         """Probe the known ports; ask the user only if that is inconclusive."""
-        self._set_status("Searching for the Unicorn stream…", color=FG_YELLOW)
+        self._set_status("Cerco il segnale dell'Unicorn…", color=FG_YELLOW)
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             QApplication.processEvents()
@@ -445,35 +536,35 @@ class DevicePanel(QWidget):
             return int(found[0]["port"])
         if len(found) > 1:
             labels = [
-                f"UDP {f['port']}  —  {f['channels']} channels ({f['layout']})"
+                f"UDP {f['port']}  —  {f['channels']} canali ({f['layout']})"
                 for f in found
             ]
             choice, ok = QInputDialog.getItem(
-                self, "Live EEG",
-                "More than one Unicorn stream was found.\n"
-                "Pick the one for this device:",
+                self, "EEG dal vivo",
+                "Ho trovato più di un segnale Unicorn.\n"
+                "Scegli quello di questo dispositivo:",
                 labels, 0, False,
             )
             if not ok:
-                self._set_status("IDLE", color=FG_DIM)
+                self._set_status("FERMO", color=FG_DIM)
                 return None
             return int(found[labels.index(choice)]["port"])
 
         # Nothing heard: let the user name the port, and say why.
-        self._set_status("No Unicorn stream found", color=FG_YELLOW)
+        self._set_status("Nessun segnale Unicorn trovato", color=FG_YELLOW)
         port, ok = QInputDialog.getInt(
-            self, "Live EEG",
-            "No Unicorn data was heard on the usual ports.\n\n"
-            "Start g.tec's sender first:\n"
+            self, "EEG dal vivo",
+            "Non arrivano dati Unicorn sulle porte solite.\n\n"
+            "Avvia prima il programma g.tec:\n"
             "  • Unicorn BCI Core Recorder → Settings → Network →\n"
-            "    'Sending data via UDP'  (default port 1001), or\n"
+            "    'Sending data via UDP'  (porta predefinita 1001), oppure\n"
             "  • Unicorn Suite → DevTools → UnicornUDP.exe\n\n"
-            "Use a different port for each device (e.g. 1001 human,\n"
-            "1002 dog), then confirm the port to listen on:",
+            "Usa una porta diversa per ogni dispositivo (es. 1001 umano,\n"
+            "1002 cane), poi conferma la porta da ascoltare:",
             DEFAULT_UDP_PORT, 1, 65535, 1,
         )
         if not ok:
-            self._set_status("IDLE", color=FG_DIM)
+            self._set_status("FERMO", color=FG_DIM)
             return None
         return int(port)
 
@@ -485,11 +576,9 @@ class DevicePanel(QWidget):
         if was_streaming:
             self._stop_engine()
         live.close()
-        self._live_btn.setText("LIVE EEG")
-        self._source_lbl.setText("SIMULATOR")
-        self._source_lbl.setStyleSheet(f"color: {FG_LIME};")
-        self._sim_btn.setEnabled(False)
-        self._set_status("LIVE stopped", color=FG_YELLOW)
+        self._source_lbl.setText("")
+        self._set_status("EEG dal vivo interrotto", color=FG_YELLOW)
+        self._sync_mode_buttons()
         if restart and was_streaming:
             self._start_engine()
 
@@ -502,6 +591,21 @@ class DevicePanel(QWidget):
             self._stop_engine()
         else:
             self._start_engine()
+
+    def _warn_if_no_midi(self) -> None:
+        """Starting without a MIDI port produces silence and no error.
+
+        Deliberately NOT a modal dialog: a blocking popup is the last thing
+        anyone wants mid-performance. The panel says it loudly instead —
+        here, in the pink health strip, and in the still-yellow COLLEGA
+        button — which is impossible to miss and never interrupts.
+        """
+        if self._midi.is_open:
+            return
+        self._no_midi_warned = True
+        self._set_status(
+            "NESSUNA PORTA MIDI — non uscirà alcun suono", color=FG_MAGENTA
+        )
 
     def _build_source_and_config(self):
         if self._live is not None:
@@ -549,25 +653,30 @@ class DevicePanel(QWidget):
             engine.mapper.add_strategy(s)
         self._engine = engine
         engine.start()
-        self._start_btn.setText("STOP")
+        self._start_btn.setText("FERMA")
         self._start_btn.setObjectName("DangerButton")
         self._start_btn.setStyleSheet("")
         self._start_btn.style().unpolish(self._start_btn)
         self._start_btn.style().polish(self._start_btn)
-        kind = "PLAYBACK" if self._playback is not None else "STREAMING"
-        self._set_status(kind, color=FG_GOOD)
+        if self._midi.is_open:
+            kind = (
+                "RIPRODUZIONE" if self._playback is not None else "IN ONDA"
+            )
+            self._set_status(kind, color=FG_GOOD)
+        else:
+            self._warn_if_no_midi()
 
     def _stop_engine(self) -> None:
         if self._engine is None:
             return
         self._engine.stop()
         self._engine = None
-        self._start_btn.setText("START")
+        self._start_btn.setText("AVVIA")
         self._start_btn.setObjectName("PrimaryButton")
         self._start_btn.setStyleSheet("")
         self._start_btn.style().unpolish(self._start_btn)
         self._start_btn.style().polish(self._start_btn)
-        self._set_status("STOPPED", color=FG_YELLOW)
+        self._set_status("FERMO", color=FG_YELLOW)
 
     def _on_source_finished(self) -> None:
         # The engine already flushed held notes on exhaustion; stop() also
@@ -583,12 +692,12 @@ class DevicePanel(QWidget):
         except Exception:
             pass
         self._engine = None
-        self._start_btn.setText("START")
+        self._start_btn.setText("AVVIA")
         self._start_btn.setObjectName("PrimaryButton")
         self._start_btn.setStyleSheet("")
         self._start_btn.style().unpolish(self._start_btn)
         self._start_btn.style().polish(self._start_btn)
-        self._set_status("PLAYBACK FINISHED", color=FG_YELLOW)
+        self._set_status("FILE TERMINATO", color=FG_YELLOW)
         if self._recording:
             self._stop_record(save=True)
 
@@ -619,14 +728,14 @@ class DevicePanel(QWidget):
             source=src,
         )
         self._recording = True
-        self._rec_btn.setText("■ STOP REC")
-        self._rec_lbl.setText("REC 0.0s")
+        self._rec_btn.setText("■ FERMA REG.")
+        self._rec_lbl.setText("REG 0.0s")
         if not self.is_streaming:
             self._start_engine()
 
     def _stop_record(self, save: bool = True) -> None:
         self._recording = False
-        self._rec_btn.setText("● REC")
+        self._rec_btn.setText("● REGISTRA")
         rec = self._recorder
         self._recorder = None
         self._rec_lbl.setText("")
@@ -640,10 +749,10 @@ class DevicePanel(QWidget):
             rid = self._archive.save(recording)
             self.recording_saved.emit(rid)
             self._set_status(
-                f"SAVED {rec.duration_seconds:.1f}s -> archive", color=FG_GOOD
+                f"SALVATO {rec.duration_seconds:.1f}s in archivio", color=FG_GOOD
             )
         except Exception as e:
-            self._set_status(f"SAVE ERR: {e}", color=FG_MAGENTA)
+            self._set_status(f"ERRORE SALVATAGGIO: {e}", color=FG_MAGENTA)
 
     def _capture_packet(self, packet: UnicornPacket) -> None:
         # Track battery for the stats line.
@@ -654,7 +763,7 @@ class DevicePanel(QWidget):
         if self._recording and self._recorder is not None:
             self._recorder.add_packet(packet)
             dur = self._recorder.duration_seconds
-            self._rec_lbl.setText(f"REC {dur:.1f}s")
+            self._rec_lbl.setText(f"REG {dur:.1f}s")
             if dur >= _MAX_RECORD_SECONDS:
                 self._stop_record(save=True)
 
@@ -663,29 +772,67 @@ class DevicePanel(QWidget):
     # ------------------------------------------------------------------ #
 
     def _update_stats(self) -> None:
-        ev = self._engine.event_count if self._engine else 0
-        parts = [f"battery {self._last_battery:.0f}%", f"midi events {ev}"]
-        if self._midi.is_open:
-            st = self._midi.stats
-            parts.append(f"sent {st['sent']}")
-            if st["failed"]:
-                parts.append(f"err {st['failed']}")
+        """Render the health strip: signal in, MIDI out, and any trouble.
+
+        Written as two plain claims ("EEG ..." then "MIDI ...") because
+        during a performance the only questions are whether data is coming
+        in and whether notes are going out. The colour is the summary: green
+        while both are true, yellow while idle, pink when something is wrong.
+        """
+        parts: list[str] = []
+        trouble = False
+        idle = not self.is_streaming
+
+        # --- signal in ---
         if self._live is not None:
             lst = self._live.stats
-            parts.append(f"eeg {lst['samples']}")
+            if self._live.has_signal:
+                parts.append(f"EEG dal vivo {lst['samples']} campioni")
+            else:
+                parts.append("EEG dal vivo NESSUN DATO")
+                trouble = True
             if lst["dropped"]:
-                parts.append(f"late {lst['dropped']}")
+                parts.append(f"scartati {lst['dropped']}")
             if lst["malformed"]:
-                parts.append(f"bad {lst['malformed']}")
-            parts.append(str(lst["layout"]))
-        if self._playback is not None and self._engine is not None:
+                parts.append(f"corrotti {lst['malformed']}")
+                trouble = True
+        elif self._playback is not None and self._engine is not None:
             src = self._engine.source
             if isinstance(src, ArrayPlaybackSource):
                 parts.append(
-                    f"pos {src.position_seconds:.0f}/"
+                    f"FILE {src.position_seconds:.0f}/"
                     f"{src.duration_seconds:.0f}s"
                 )
-        self._stats.setText("   ".join(parts))
+            else:
+                parts.append("FILE")
+        else:
+            parts.append(f"SIMULATORE batteria {self._last_battery:.0f}%")
+
+        # --- MIDI out ---
+        ev = self._engine.event_count if self._engine else 0
+        if self._midi.is_open:
+            st = self._midi.stats
+            if st["failed"]:
+                parts.append(
+                    f"MIDI {st['sent']} inviati, {st['failed']} FALLITI"
+                )
+                trouble = True
+            else:
+                parts.append(f"MIDI {st['sent']} inviati")
+            if st["reconnects"]:
+                parts.append(f"riconnessioni {st['reconnects']}")
+        else:
+            parts.append(f"MIDI NON COLLEGATO ({ev} eventi non udibili)")
+            trouble = True
+
+        self._stats.setText("     ".join(parts))
+        if trouble:
+            colour = FG_MAGENTA
+        elif idle:
+            colour = FG_DIM
+        else:
+            colour = FG_GOOD
+        self._stats.setStyleSheet(f"color: {colour};")
         self._surface_live_health()
         self._surface_midi_health()
 
@@ -698,18 +845,18 @@ class DevicePanel(QWidget):
             if self._live_warned_no_data:
                 self._live_warned_no_data = False
                 self._set_status(
-                    f"LIVE EEG on UDP {live.port}", color=FG_GOOD
+                    f"EEG DAL VIVO su UDP {live.port}", color=FG_GOOD
                 )
             return
         if not self._live_warned_no_data:
             self._live_warned_no_data = True
             age = live.seconds_since_data
             detail = (
-                "no data yet" if age is None
-                else f"silent for {age:.0f}s"
+                "nessun dato" if age is None
+                else f"silenzio da {age:.0f}s"
             )
             self._set_status(
-                f"LIVE EEG — {detail} (is the g.tec sender running?)",
+                f"EEG DAL VIVO — {detail} (il programma g.tec sta trasmettendo?)",
                 color=FG_MAGENTA,
             )
 
@@ -726,14 +873,14 @@ class DevicePanel(QWidget):
         if self._midi.is_stalled:
             self._midi_stall_shown = True
             self._set_status(
-                "MIDI STALLED — reconnecting…", color=FG_MAGENTA
+                "MIDI BLOCCATO — riconnessione…", color=FG_MAGENTA
             )
             return
         if st["reconnects"] > self._known_reconnects:
             self._known_reconnects = st["reconnects"]
             self._midi_stall_shown = False
             self._set_status(
-                f"MIDI: {self._midi.port_name} (reconnected)", color=FG_GOOD
+                f"MIDI: {self._midi.port_name} (riconnesso)", color=FG_GOOD
             )
         elif self._midi_stall_shown:
             # Stall cleared without a full reconnect (transient failure).

@@ -63,6 +63,22 @@ def main() -> int:
         if os.path.isdir(target):
             shutil.move(target, backup)
         shutil.copytree(src, target)
+        # Leave a one-shot note so the app can tell the user what changed:
+        # without it an update is invisible and looks like nothing happened.
+        try:
+            with open(
+                os.path.join(home_dir(), "updates", "last_applied.json"),
+                "w", encoding="utf-8",
+            ) as f:
+                json.dump(
+                    {
+                        "version": info.get("version", ""),
+                        "notes": info.get("notes", ""),
+                    },
+                    f, indent=2,
+                )
+        except Exception:
+            pass
         # Success: drop backup + pending marker + staged files.
         shutil.rmtree(backup, ignore_errors=True)
         os.remove(pending)

@@ -38,6 +38,18 @@ identico al formato interno dell'app), 14 canali (BCI Core Recorder con tutte
 le colonne) e il caso di soli 8 canali EEG. Le registrazioni **CSV** e
 **BDF+** del Recorder si riproducono con **LOAD FILE**.
 
+## Novità della versione 0.8.0
+
+* **Interfaccia in italiano** e riordinata secondo l'ordine reale delle
+  operazioni: profilo → COLLEGA il MIDI → scegli la SORGENTE → AVVIA.
+* **Versione sempre visibile** (titolo e barra in alto) e finestrella
+  **"cosa è cambiato"** al primo avvio dopo un aggiornamento.
+* **Riga di salute a colori**: dice sempre se il segnale entra e se il MIDI
+  esce. Avviare senza porta MIDI non è più un silenzio misterioso.
+* **Sorgente come controllo segmentato** (SIMULATORE / FILE / EEG DAL VIVO),
+  **pannelli UMANO e CANE distinti** da banda e colore, **monitor MIDI**
+  ridimensionabile che lascia spazio alla forma d'onda.
+
 ## Novità della versione 0.7.0
 
 * **EEG reali in diretta**: nuovo pulsante **LIVE EEG** con rilevamento

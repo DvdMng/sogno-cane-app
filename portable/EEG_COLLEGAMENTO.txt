@@ -1,0 +1,87 @@
+SOGNO_CANE - COLLEGARE GLI EEG VERI (g.tec Unicorn)
+====================================================
+
+SOGNO_CANE legge l'EEG in tempo reale attraverso lo stream di rete che i
+programmi g.tec gia' forniscono. Non devi installare nient'altro: usi il
+software arrivato con il dispositivo, e SOGNO_CANE lo ascolta.
+
+
+PRIMA VOLTA, PASSO PASSO
+------------------------
+
+1) Accendi l'Unicorn e collegalo al PC (Bluetooth), come da manuale g.tec.
+
+2) Avvia UNO di questi due programmi:
+
+   A) Unicorn BCI Core Recorder      <- consigliato
+      - collega il dispositivo (Connect)
+      - Settings -> Network -> "Sending data via UDP"
+      - IP  : 127.0.0.1
+      - Port: 1001            (per il SECONDO dispositivo usa 1002)
+      - premi Play per far partire l'acquisizione
+
+   B) Unicorn Suite -> DevTools -> UnicornUDP.exe
+      - scegli il dispositivo dal menu a tendina
+      - IP 127.0.0.1, Port 1001   (secondo dispositivo: 1002)
+      - Open, poi Start
+
+3) Apri SOGNO_CANE e premi il pulsante  LIVE EEG  sul pannello del
+   dispositivo (HUMAN o DOG).
+
+   L'app cerca da sola la porta e riconosce il formato dei canali.
+   Se trova piu' di uno stream ti chiede quale usare.
+
+4) Collega la porta MIDI come sempre (REFRESH -> CONNECT su loopMIDI) e
+   suona.
+
+
+DUE EEG INSIEME (UMANO + CANE)
+------------------------------
+
+Ogni dispositivo ha bisogno della SUA porta UDP. La combinazione collaudata:
+
+   umano -> porta 1001 -> pannello HUMAN -> porta MIDI 1
+   cane  -> porta 1002 -> pannello DOG   -> porta MIDI 2
+
+Servono due istanze del programma g.tec (una per dispositivo), ognuna con la
+propria porta. Poi premi LIVE EEG su entrambi i pannelli di SOGNO_CANE.
+
+
+SE NON ARRIVA NIENTE
+--------------------
+
+Nella riga di stato del pannello compare:
+
+   "LIVE EEG - silent for Ns (is the g.tec sender running?)"
+
+Vuol dire che SOGNO_CANE sta ascoltando ma sul filo non passa nulla.
+Controlla, in quest'ordine:
+
+   1. il programma g.tec sta trasmettendo? (Start premuto, non solo Open)
+   2. la porta e' la stessa nei due programmi?
+   3. l'IP di destinazione e' 127.0.0.1 (stesso PC)?
+
+Per una verifica rapida senza aprire l'app, apri il Prompt dei comandi nella
+cartella di SOGNO_CANE e lancia:
+
+   runtime\python.exe -m sogno_cane --live-test
+
+Ti dice se arrivano dati, su quale porta, con quale formato e con quale
+ampiezza di segnale.
+
+
+COSE CHE E' UTILE SAPERE
+------------------------
+
+- Se il segnale si interrompe (Bluetooth, batteria, programma chiuso)
+  SOGNO_CANE NON si ferma: resta in ascolto e riprende da solo appena i dati
+  tornano. Lo stato te lo dice chiaramente.
+
+- I filtri (notch 50 Hz, passa-banda) conviene attivarli nel Recorder g.tec:
+  arrivano gia' puliti a SOGNO_CANE.
+
+- Le registrazioni fatte col Recorder (CSV o BDF) si riascoltano in
+  SOGNO_CANE con LOAD FILE, e passano nello stesso identico motore musicale.
+
+- Il simulatore resta disponibile: premi USE SIM per tornarci (utile per
+  provare il set senza indossare niente).

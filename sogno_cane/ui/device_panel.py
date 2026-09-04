@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import os
 
-from PySide6.QtCore import QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QFileDialog,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMessageBox,
     QPushButton,
@@ -24,6 +26,12 @@ from PySide6.QtWidgets import (
 
 from sogno_cane.core.engine import RealtimeEngine
 from sogno_cane.core.sources import ArrayPlaybackSource
+from sogno_cane.eeg.live import (
+    ALT_UDP_PORTS,
+    DEFAULT_UDP_PORT,
+    UnicornLiveSource,
+    probe_udp_ports,
+)
 from sogno_cane.eeg.profiles import ALL_PROFILES, DeviceProfile
 from sogno_cane.eeg.unicorn_packet import UnicornPacket
 from sogno_cane.io.archive import Archive
@@ -73,6 +81,9 @@ class DevicePanel(QWidget):
         # Source state.
         self._playback = None          # LoadedEEG when a file is loaded
         self._loop_playback = True
+        # Live acquisition from a real Unicorn (UDP), when connected.
+        self._live: UnicornLiveSource | None = None
+        self._live_warned_no_data = False
 
         # Recording state.
         self._recorder: Recorder | None = None
@@ -136,6 +147,16 @@ class DevicePanel(QWidget):
         )
         self._load_btn.clicked.connect(self._load_file)
         rowB.addWidget(self._load_btn)
+        self._live_btn = QPushButton("LIVE EEG")
+        self._live_btn.setToolTip(
+            "Connect a real Unicorn headset. Start g.tec's sender first "
+            "(Unicorn BCI Core Recorder -> Settings -> Network -> 'Sending "
+            "data via UDP', or Unicorn Suite -> DevTools -> UnicornUDP.exe), "
+            "then press this: the port and channel layout are detected "
+            "automatically."
+        )
+        self._live_btn.clicked.connect(self._toggle_live)
+        rowB.addWidget(self._live_btn)
         self._sim_btn = QPushButton("USE SIM")
         self._sim_btn.clicked.connect(self._use_simulator)
         self._sim_btn.setEnabled(False)
@@ -234,6 +255,9 @@ class DevicePanel(QWidget):
             self._stop_record(save=True)
         if self._engine is not None and self._engine.is_running:
             self._engine.stop()
+        if self._live is not None:
+            self._live.close()
+            self._live = None
         self._midi.close()
 
     # ------------------------------------------------------------------ #
@@ -332,6 +356,8 @@ class DevicePanel(QWidget):
 
     def play_loaded(self, loaded, autostart: bool = True) -> None:
         """Use ``loaded`` (a LoadedEEG) as the playback source."""
+        if self._live is not None:
+            self._disconnect_live(restart=False)
         self._playback = loaded
         self._sim_btn.setEnabled(True)
         self._source_lbl.setText(
@@ -348,11 +374,123 @@ class DevicePanel(QWidget):
 
     def _use_simulator(self) -> None:
         self._playback = None
+        self._disconnect_live(restart=False)
         self._sim_btn.setEnabled(False)
         self._source_lbl.setText("SIMULATOR")
         self._source_lbl.setStyleSheet(f"color: {FG_LIME};")
         if self.is_streaming:
             self._stop_engine()
+            self._start_engine()
+
+    # ------------------------------------------------------------------ #
+    # Live acquisition (real Unicorn over UDP)                           #
+    # ------------------------------------------------------------------ #
+
+    @property
+    def live_source(self) -> UnicornLiveSource | None:
+        return self._live
+
+    def _toggle_live(self) -> None:
+        if self._live is not None:
+            self._disconnect_live(restart=True)
+        else:
+            self._connect_live()
+
+    def _connect_live(self, port: int | None = None) -> None:
+        """Find the g.tec sender and start consuming it.
+
+        Plug and play: we listen on the documented ports for a moment and
+        adopt whichever one is actually carrying Unicorn datagrams, so the
+        user only has to have started the g.tec tool.
+        """
+        if port is None:
+            port = self._discover_port()
+            if port is None:
+                return
+        try:
+            live = UnicornLiveSource(port=int(port), packet_samples=25)
+            live.open()
+        except OSError as exc:
+            QMessageBox.warning(
+                self, "Live EEG",
+                f"Could not listen on UDP port {port}:\n{exc}\n\n"
+                f"Another application (or the other device panel) may "
+                f"already be using it. Pick a different port in the g.tec "
+                f"sender and try again.",
+            )
+            return
+        self._live = live
+        self._live_warned_no_data = False
+        self._playback = None
+        self._sim_btn.setEnabled(True)
+        self._live_btn.setText("STOP LIVE")
+        self._source_lbl.setText(f"LIVE UNICORN  (UDP {port})")
+        self._source_lbl.setStyleSheet(f"color: {FG_GOOD};")
+        self._set_status(f"LIVE EEG on UDP {port}", color=FG_GOOD)
+        if self.is_streaming:
+            self._stop_engine()
+        self._start_engine()
+
+    def _discover_port(self) -> int | None:
+        """Probe the known ports; ask the user only if that is inconclusive."""
+        self._set_status("Searching for the Unicorn stream…", color=FG_YELLOW)
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            QApplication.processEvents()
+            found = probe_udp_ports(ports=ALT_UDP_PORTS, timeout=1.5)
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        if len(found) == 1:
+            return int(found[0]["port"])
+        if len(found) > 1:
+            labels = [
+                f"UDP {f['port']}  —  {f['channels']} channels ({f['layout']})"
+                for f in found
+            ]
+            choice, ok = QInputDialog.getItem(
+                self, "Live EEG",
+                "More than one Unicorn stream was found.\n"
+                "Pick the one for this device:",
+                labels, 0, False,
+            )
+            if not ok:
+                self._set_status("IDLE", color=FG_DIM)
+                return None
+            return int(found[labels.index(choice)]["port"])
+
+        # Nothing heard: let the user name the port, and say why.
+        self._set_status("No Unicorn stream found", color=FG_YELLOW)
+        port, ok = QInputDialog.getInt(
+            self, "Live EEG",
+            "No Unicorn data was heard on the usual ports.\n\n"
+            "Start g.tec's sender first:\n"
+            "  • Unicorn BCI Core Recorder → Settings → Network →\n"
+            "    'Sending data via UDP'  (default port 1001), or\n"
+            "  • Unicorn Suite → DevTools → UnicornUDP.exe\n\n"
+            "Use a different port for each device (e.g. 1001 human,\n"
+            "1002 dog), then confirm the port to listen on:",
+            DEFAULT_UDP_PORT, 1, 65535, 1,
+        )
+        if not ok:
+            self._set_status("IDLE", color=FG_DIM)
+            return None
+        return int(port)
+
+    def _disconnect_live(self, restart: bool = True) -> None:
+        live, self._live = self._live, None
+        if live is None:
+            return
+        was_streaming = self.is_streaming
+        if was_streaming:
+            self._stop_engine()
+        live.close()
+        self._live_btn.setText("LIVE EEG")
+        self._source_lbl.setText("SIMULATOR")
+        self._source_lbl.setStyleSheet(f"color: {FG_LIME};")
+        self._sim_btn.setEnabled(False)
+        self._set_status("LIVE stopped", color=FG_YELLOW)
+        if restart and was_streaming:
             self._start_engine()
 
     # ------------------------------------------------------------------ #
@@ -366,6 +504,16 @@ class DevicePanel(QWidget):
             self._start_engine()
 
     def _build_source_and_config(self):
+        if self._live is not None:
+            # The live socket is bound once and reused across stop/start:
+            # rebinding on every START would race with the OS releasing the
+            # port and would drop samples for no reason.
+            cfg = MappingConfig(
+                sample_rate_hz=int(self._live.sample_rate_hz),
+                window_seconds=1.0,
+                hop_seconds=0.1,
+            )
+            return self._live, cfg
         if self._playback is not None:
             src = ArrayPlaybackSource(
                 self._playback.data,
@@ -522,6 +670,14 @@ class DevicePanel(QWidget):
             parts.append(f"sent {st['sent']}")
             if st["failed"]:
                 parts.append(f"err {st['failed']}")
+        if self._live is not None:
+            lst = self._live.stats
+            parts.append(f"eeg {lst['samples']}")
+            if lst["dropped"]:
+                parts.append(f"late {lst['dropped']}")
+            if lst["malformed"]:
+                parts.append(f"bad {lst['malformed']}")
+            parts.append(str(lst["layout"]))
         if self._playback is not None and self._engine is not None:
             src = self._engine.source
             if isinstance(src, ArrayPlaybackSource):
@@ -530,7 +686,32 @@ class DevicePanel(QWidget):
                     f"{src.duration_seconds:.0f}s"
                 )
         self._stats.setText("   ".join(parts))
+        self._surface_live_health()
         self._surface_midi_health()
+
+    def _surface_live_health(self) -> None:
+        """Say plainly whether EEG is actually arriving on the wire."""
+        live = self._live
+        if live is None:
+            return
+        if live.has_signal:
+            if self._live_warned_no_data:
+                self._live_warned_no_data = False
+                self._set_status(
+                    f"LIVE EEG on UDP {live.port}", color=FG_GOOD
+                )
+            return
+        if not self._live_warned_no_data:
+            self._live_warned_no_data = True
+            age = live.seconds_since_data
+            detail = (
+                "no data yet" if age is None
+                else f"silent for {age:.0f}s"
+            )
+            self._set_status(
+                f"LIVE EEG — {detail} (is the g.tec sender running?)",
+                color=FG_MAGENTA,
+            )
 
     def _surface_midi_health(self) -> None:
         """Tell the truth about the wire: sends failing vs recovered.

@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.7.0 — EEG veri, in diretta
+Fino alla 0.6.0 l'app sapeva solo **simulare** un EEG o **rileggere un file**:
+non esisteva alcun percorso di acquisizione dal vivo (nessun socket, nessuna
+seriale, nessun LSL nel codice). Con l'arrivo degli **Unicorn BCI Core** —
+il modello che g.tec vende esplicitamente per registrazioni su umani, cani e
+cavalli — questa versione aggiunge la lettura in tempo reale e la inietta nel
+flusso di traduzione già collaudato, senza toccarlo.
+
+- **Nuova sorgente LIVE (UDP)** — `sogno_cane/eeg/live.py`. L'app non parla
+  col Bluetooth: consuma lo stream di rete che gli strumenti g.tec già
+  emettono (Unicorn BCI Core Recorder → Network → *Sending data via UDP*,
+  oppure Unicorn Suite → DevTools → `UnicornUDP.exe`). Zero dipendenze nuove:
+  solo la libreria standard, quindi il bundle portabile resta invariato.
+- **Formato riconosciuto da solo.** Il datagramma dell'Unicorn UDP Interface
+  è di 68 byte = 17 float32 (`EEG1-8, ACC XYZ, GYR XYZ, BAT, CNT, VALID`):
+  **coincide byte per byte** con il pacchetto che l'app usa dal primo giorno,
+  quindi passa senza conversione. Il BCI Core Recorder invia invece le sue
+  colonne (`EEG1-8, SAT, CNT, BAT, VALID, DT, STATUS`): l'app riconosce il
+  layout dalla dimensione del datagramma e mappa batteria/contatore/validità
+  al posto giusto, senza mai scambiare una flag di saturazione per un canale
+  EEG.
+- **Plug and play**: il pulsante **LIVE EEG** su ogni dispositivo ascolta le
+  porte note, trova da solo quella attiva e si collega. Se ne trova più di
+  una chiede quale; se non ne trova nessuna spiega cosa avviare e su quale
+  porta. Due dispositivi = due porte (es. 1001 umano, 1002 cane), ognuno col
+  proprio motore e la propria uscita MIDI.
+- **Robustezza in scena** (nello spirito della 0.6.0): un buco sul filo non
+  ferma più niente — il motore riceve silenzio e **riprende da solo** quando
+  il segnale torna, mentre lo stato dice chiaramente *"LIVE EEG — silent for
+  Ns (is the g.tec sender running?)"*. Il backlog è limitato: se il consumo
+  rallenta si scartano i campioni vecchi invece di accumulare ritardo.
+- **Diagnostica da riga di comando**: `python -m sogno_cane --live-test`
+  cerca lo stream, dice porta, layout, campioni ricevuti e ampiezza di picco.
+  Serve a rispondere in dieci secondi alla domanda "arriva qualcosa?".
+- **Nota sui file**: i CSV registrati dal BCI Core Recorder erano già
+  riproducibili con LOAD FILE (le 8 colonne EEG stanno in testa e finiscono
+  correttamente nel motore); restano leggibili anche i BDF+.
+- Test: +16 dedicati (layout dei tre mittenti, dropout, backlog limitato,
+  datagrammi corrotti, rilevamento porta, pannello Qt, CLI) — **176 totali**.
+
 ## 0.6.0
 Risponde ai feedback del 29/08: "quando cambio setup o fermo/riavvio
 l'encefalogramma la comunicazione MIDI si interrompe, a volte un canale

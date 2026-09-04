@@ -1,2 +1,2 @@
-"""SOGNO_CANE - EEG to MIDI bridge for human + dog Unicorn Hybrid Black."""
-__version__ = "0.6.0"
+"""SOGNO_CANE - EEG to MIDI bridge for human + dog (g.tec Unicorn)."""
+__version__ = "0.7.0"

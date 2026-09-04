@@ -10,6 +10,43 @@ MIDI inviabile a qualsiasi DAW (Ableton, ecc.) tramite una porta MIDI virtuale
 
 ---
 
+## Collegare un EEG vero (Unicorn)
+
+L'app legge un **Unicorn** in tempo reale attraverso lo stream di rete che gli
+strumenti g.tec già forniscono — non serve installare nulla in più.
+
+1. Accendi il dispositivo e avvia **uno** di questi (entrambi inclusi con la
+   g.tec Suite):
+   * **Unicorn BCI Core Recorder** → `Settings` → `Network` →
+     *Sending data via UDP* (porta predefinita **1001**), oppure
+   * **Unicorn Suite** → `DevTools` → `UnicornUDP.exe` → imposta IP
+     `127.0.0.1` e una porta, poi `Open` → `Start`.
+2. In SOGNO_CANE premi **LIVE EEG** sul pannello del dispositivo: la porta e
+   il formato dei canali vengono riconosciuti da soli.
+3. Con **due** EEG (umano + cane) usa **una porta per ciascuno** — per esempio
+   1001 per l'umano e 1002 per il cane — e premi LIVE EEG su entrambi i
+   pannelli. Ogni dispositivo ha il suo motore e la sua porta MIDI.
+
+Verifica rapida senza aprire l'app:
+
+```bash
+python -m sogno_cane --live-test
+```
+
+Formati riconosciuti automaticamente: 17 canali (Unicorn UDP Interface,
+identico al formato interno dell'app), 14 canali (BCI Core Recorder con tutte
+le colonne) e il caso di soli 8 canali EEG. Le registrazioni **CSV** e
+**BDF+** del Recorder si riproducono con **LOAD FILE**.
+
+## Novità della versione 0.7.0
+
+* **EEG reali in diretta**: nuovo pulsante **LIVE EEG** con rilevamento
+  automatico di porta e formato; due dispositivi in parallelo su due porte.
+  Un'interruzione del segnale non ferma il motore e il flusso riprende da
+  solo. Nessuna dipendenza aggiuntiva (solo UDP di sistema).
+* **`--live-test`**: diagnostica da riga di comando per capire in dieci
+  secondi se i dati arrivano e su quale porta.
+
 ## Novità della versione 0.6.0
 
 * **MIDI affidabile su sessioni lunghe.** Dopo uno STOP/START o un cambio di

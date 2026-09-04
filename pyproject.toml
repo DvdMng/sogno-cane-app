@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sogno_cane"
-version = "0.6.0"
-description = "EEG -> MIDI bridge and simulator for human + dog (Unicorn Hybrid Black)"
+version = "0.7.0"
+description = "EEG -> MIDI bridge and simulator for human + dog (g.tec Unicorn)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

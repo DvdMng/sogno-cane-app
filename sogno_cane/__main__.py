@@ -1,8 +1,9 @@
 """Entry point for SOGNO_CANE.
 
 Usage:
-    python -m sogno_cane            # launch the GUI
-    python -m sogno_cane --selftest # headless self-test (no window)
+    python -m sogno_cane             # launch the GUI
+    python -m sogno_cane --selftest  # headless self-test (no window)
+    python -m sogno_cane --live-test # look for a real Unicorn UDP stream
     python -m sogno_cane --version
 
 The GUI path installs a last-resort exception hook so that, in the portable
@@ -64,6 +65,82 @@ def _selftest() -> int:
     return 0
 
 
+def _live_test(argv: list[str]) -> int:
+    """Listen for a real Unicorn stream and report what arrives.
+
+    On-site troubleshooting without opening the GUI: answers the only two
+    questions that matter when nothing is heard — is anything reaching this
+    machine, and on which port?
+
+        python -m sogno_cane --live-test          # scan the usual ports
+        python -m sogno_cane --live-test 1002     # listen on one port
+    """
+    import time
+
+    from sogno_cane.eeg.live import (
+        ALT_UDP_PORTS,
+        UnicornLiveSource,
+        probe_udp_ports,
+    )
+
+    port = None
+    for i, a in enumerate(argv):
+        if a == "--live-test" and i + 1 < len(argv):
+            nxt = argv[i + 1]
+            if nxt.isdigit():
+                port = int(nxt)
+            break
+
+    if port is None:
+        print(f"Scanning UDP ports {list(ALT_UDP_PORTS)} for 3 s...")
+        found = probe_udp_ports(ports=ALT_UDP_PORTS, timeout=3.0)
+        if not found:
+            print(
+                "No Unicorn stream found.\n"
+                "Start g.tec's sender first:\n"
+                "  Unicorn BCI Core Recorder -> Settings -> Network ->\n"
+                "    'Sending data via UDP'   (default port 1001), or\n"
+                "  Unicorn Suite -> DevTools -> UnicornUDP.exe"
+            )
+            return 1
+        for f in found:
+            print(
+                f"  found: UDP {f['port']} - {f['channels']} channels "
+                f"({f['layout']})"
+            )
+        port = int(found[0]["port"])
+        print(f"Listening on the first one (UDP {port})...")
+
+    src = UnicornLiveSource(port=port)
+    try:
+        src.open()
+    except OSError as exc:
+        print(f"Cannot listen on UDP {port}: {exc}")
+        return 1
+    try:
+        deadline = time.monotonic() + 5.0
+        peak = 0.0
+        while time.monotonic() < deadline:
+            pkt = src.next_packet()
+            if pkt is not None:
+                peak = max(peak, float(abs(pkt.eeg).max()))
+        st = src.stats
+        print(
+            f"UDP {st['port']}: {st['datagrams']} datagrams, "
+            f"{st['samples']} samples, layout {st['layout']} "
+            f"({st['channels']} channels), dropped {st['dropped']}, "
+            f"malformed {st['malformed']}"
+        )
+        print(f"peak EEG amplitude: {peak:.1f} uV")
+        if st["samples"] == 0:
+            print("NO DATA - the sender is not transmitting to this port.")
+            return 1
+        print("live acquisition OK")
+        return 0
+    finally:
+        src.close()
+
+
 def _install_excepthook(app) -> None:
     from PySide6.QtWidgets import QMessageBox
 
@@ -97,6 +174,12 @@ def main(argv: list[str] | None = None) -> int:
     if "--selftest" in argv or "--check" in argv:
         try:
             return _selftest()
+        except Exception:
+            traceback.print_exc()
+            return 1
+    if "--live-test" in argv:
+        try:
+            return _live_test(argv)
         except Exception:
             traceback.print_exc()
             return 1

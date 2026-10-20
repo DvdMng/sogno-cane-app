@@ -58,6 +58,44 @@ def _note_length_seconds(sb: QDoubleSpinBox) -> float:
     return max(0.0, float(sb.value())) / 1000.0
 
 
+def _adaptive_controls(
+    strategy, set_safe, default_threshold: float,
+) -> tuple[QCheckBox, QDoubleSpinBox]:
+    """Shared 'adattiva' switch + relative threshold for event strategies.
+
+    In adaptive mode an event fires when the band rises the given number of
+    typical deviations above its own recent baseline, so the setting means
+    the same thing on the simulator and on any real headset. The absolute
+    uV^2 threshold only applies with the switch off.
+    """
+    cb = QCheckBox("adattiva (consigliata con gli EEG veri)")
+    cb.setChecked(bool(getattr(strategy, "adaptive", True)))
+    cb.setToolTip(
+        "Adattiva: scatta quando la banda sale di N volte la sua variabilità\n"
+        "tipica sopra la propria media recente — funziona uguale su\n"
+        "simulatore, cuffie a secco o con gel, umano o cane.\n"
+        "Spenta: usa la soglia fissa in uV^2 (tarata sul simulatore: con un\n"
+        "EEG vero quasi non scatta mai)."
+    )
+    cb.toggled.connect(lambda v: set_safe(strategy, "adaptive", bool(v)))
+
+    sb = QDoubleSpinBox()
+    sb.setRange(0.5, 8.0)
+    sb.setSingleStep(0.25)
+    sb.setDecimals(2)
+    sb.setSuffix(" σ")
+    sb.setValue(float(getattr(strategy, "relative_threshold",
+                              default_threshold)))
+    sb.setToolTip(
+        "Quante deviazioni tipiche sopra la norma deve salire la banda per\n"
+        "far scattare l'evento. Più alto = più raro."
+    )
+    sb.valueChanged.connect(
+        lambda v: set_safe(strategy, "relative_threshold", float(v))
+    )
+    return cb, sb
+
+
 def _safe_tab(builder, label: str) -> QWidget:
     """Run a tab builder, return a placeholder QWidget if it raises."""
     try:
@@ -388,14 +426,23 @@ class MappingPanel(QWidget):
         )
         layout.addRow("banda", band_cb)
 
+        adaptive_cb, rel_sb = _adaptive_controls(s, self._set_safe, 2.0)
+        layout.addRow("", adaptive_cb)
+        layout.addRow("soglia relativa", rel_sb)
+
         thr = QDoubleSpinBox()
         thr.setRange(0.0, 10_000.0)
         thr.setValue(float(getattr(s, "threshold_uv2", 80.0)))
         thr.setSuffix(" uV^2")
+        thr.setToolTip("Soglia assoluta: usata solo se 'adattiva' è spenta.")
         thr.valueChanged.connect(
             lambda v: self._set_safe(s, "threshold_uv2", v)
         )
-        layout.addRow("soglia", thr)
+        layout.addRow("soglia fissa", thr)
+        thr.setEnabled(not adaptive_cb.isChecked())
+        rel_sb.setEnabled(adaptive_cb.isChecked())
+        adaptive_cb.toggled.connect(lambda v: thr.setEnabled(not v))
+        adaptive_cb.toggled.connect(rel_sb.setEnabled)
 
         ch = QSpinBox()
         ch.setRange(1, 16)   # 1-16 like Ableton (stored 0-15)
@@ -536,6 +583,16 @@ class MappingPanel(QWidget):
         enable.toggled.connect(lambda v: self._set_safe(s, "enabled", v))
         layout.addWidget(enable)
 
+        adaptive_box = QGroupBox("SCATTO (vale per tutte le regole)")
+        agrid = QGridLayout(adaptive_box)
+        adaptive_cb, rel_sb = _adaptive_controls(s, self._set_safe, 3.0)
+        agrid.addWidget(adaptive_cb, 0, 0, 1, 2)
+        agrid.addWidget(QLabel("soglia relativa"), 1, 0)
+        agrid.addWidget(rel_sb, 1, 1)
+        rel_sb.setEnabled(adaptive_cb.isChecked())
+        adaptive_cb.toggled.connect(rel_sb.setEnabled)
+        layout.addWidget(adaptive_box)
+
         for i, rule in enumerate(getattr(s, "rules", []) or []):
             box = QGroupBox(f"REGOLA {i}")
             grid = QGridLayout(box)
@@ -589,7 +646,15 @@ class MappingPanel(QWidget):
             thr.valueChanged.connect(
                 lambda v, r=rule: self._set_safe(r, "threshold_uv2", v)
             )
-            grid.addWidget(QLabel("soglia"), 2, 1)
+            thr.setSuffix(" uV^2")
+            thr.setToolTip(
+                "Soglia assoluta: usata solo se 'adattiva' è spenta."
+            )
+            thr.setEnabled(not adaptive_cb.isChecked())
+            adaptive_cb.toggled.connect(
+                lambda v, w=thr: w.setEnabled(not v)
+            )
+            grid.addWidget(QLabel("soglia fissa"), 2, 1)
             grid.addWidget(thr, 2, 2)
 
             layout.addWidget(box)

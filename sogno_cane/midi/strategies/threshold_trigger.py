@@ -15,6 +15,7 @@ import numpy as np
 from sogno_cane.eeg.bands import BandPowers
 from sogno_cane.midi.context import WindowContext
 from sogno_cane.midi.mapper import MappingEvent
+from sogno_cane.midi.pacing import BurstDetector
 from sogno_cane.midi.scales import build_scale
 
 
@@ -34,6 +35,14 @@ class ThresholdTriggerStrategy:
     # stays above the release threshold (old behaviour). >0 = the engine
     # releases the note after exactly this long.
     note_length_seconds: float = 0.015
+    # Adaptive mode (default): trigger when the band rises this many typical
+    # deviations above its own recent baseline (see BurstDetector), whatever
+    # the device's absolute scale. The fixed 80 uV^2 default was tuned on
+    # the simulator and never fired at all — not on the simulator, and not
+    # on a real Unicorn, whose resting beta is ~4-7 uV^2 (measured).
+    # False = the absolute ``threshold_uv2`` (old behaviour).
+    adaptive: bool = True
+    relative_threshold: float = 2.0
     channel: int = 1
     name: str = "ThresholdTrigger"
     enabled: bool = True
@@ -48,6 +57,9 @@ class ThresholdTriggerStrategy:
     _rng: np.random.Generator = field(
         default_factory=lambda: np.random.default_rng(),
         init=False, repr=False,
+    )
+    _burst: BurstDetector = field(
+        default_factory=BurstDetector, init=False, repr=False,
     )
 
     def __post_init__(self) -> None:
@@ -94,8 +106,22 @@ class ThresholdTriggerStrategy:
             mean_pow = float(np.mean(power[idx]))
 
         events: list[MappingEvent] = []
-        release = self.threshold_uv2 * self.release_ratio
         t = ctx.t_seconds
+        if self.adaptive:
+            # Score against the signal's own past so "above threshold"
+            # means "unusually high for this signal", on any amplifier.
+            z = self._burst.score(
+                float(np.log10(max(mean_pow, 1e-6))), ctx.hop_seconds,
+            )
+            thr = max(0.0, self.relative_threshold)
+            above = z >= thr
+            below = z <= thr * self.release_ratio
+            excess = (z - thr) / max(1e-6, thr)
+        else:
+            release = self.threshold_uv2 * self.release_ratio
+            above = mean_pow >= self.threshold_uv2
+            below = mean_pow <= release
+            excess = None
 
         # Self-heal when the clock restarted behind our state (fresh engine
         # re-using this live strategy object).
@@ -104,7 +130,7 @@ class ThresholdTriggerStrategy:
 
         if (
             not self._is_active
-            and mean_pow >= self.threshold_uv2
+            and above
             and (t - self._last_trigger_t) >= max(0.0, self.min_interval_seconds)
         ):
             # Trigger.
@@ -113,7 +139,10 @@ class ThresholdTriggerStrategy:
             else:
                 note = int(self.notes[self._cycle_index % len(self.notes)])
                 self._cycle_index += 1
-            velocity = self._velocity_for(mean_pow)
+            velocity = (
+                self._velocity_for_level(excess) if excess is not None
+                else self._velocity_for(mean_pow)
+            )
             gate_len = max(0.0, self.note_length_seconds)
             events.append(MappingEvent(
                 kind="note_on",
@@ -127,7 +156,7 @@ class ThresholdTriggerStrategy:
             self._is_active = True
             self._last_trigger_t = t
 
-        elif self._is_active and mean_pow <= release:
+        elif self._is_active and below:
             if self._active_note is not None and not self._gated_last:
                 events.append(MappingEvent(
                     kind="note_off",
@@ -139,6 +168,13 @@ class ThresholdTriggerStrategy:
             self._is_active = False
 
         return events
+
+    def _velocity_for_level(self, excess: float) -> int:
+        frac = min(1.0, max(0.0, excess))
+        v = self.velocity_at_threshold + frac * (
+            self.velocity_max - self.velocity_at_threshold
+        )
+        return int(max(1, min(127, round(v))))
 
     def _velocity_for(self, power: float) -> int:
         if self.velocity_scale_uv2 <= 0:

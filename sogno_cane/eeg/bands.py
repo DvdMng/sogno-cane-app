@@ -38,10 +38,34 @@ class BandPowers:
         return self.by_band[band] / total
 
 
+def _detrend_linear(x: np.ndarray) -> np.ndarray:
+    """Remove each channel's mean and least-squares slope.
+
+    Real Unicorn amplifiers are DC-coupled: every electrode sits on an
+    offset of tens of thousands of microvolts that slowly drifts. Left in,
+    that offset leaks through the window into the lowest bins and swamps
+    every band (measured on real BCI Core recordings: delta came out at
+    100% of the power, the brain signal at 0%).
+    """
+    n = x.shape[0]
+    t = np.arange(n, dtype=np.float64)
+    t -= t.mean()
+    centred = x - x.mean(axis=0)
+    denom = float(np.dot(t, t))
+    if denom <= 0.0:
+        return centred
+    slope = (t @ centred) / denom
+    return centred - t[:, None] * slope[None, :]
+
+
 def compute_band_powers(
     eeg: np.ndarray,
     sample_rate_hz: int,
     bands: dict[str, tuple[float, float]] | None = None,
+    *,
+    detrend: bool = True,
+    mains_hz: float = 50.0,
+    notch_half_width_hz: float = 2.0,
 ) -> BandPowers:
     """Compute mean band power per channel using a Hann-windowed FFT.
 
@@ -53,6 +77,15 @@ def compute_band_powers(
         EEG sampling rate.
     bands
         Optional override of band ranges. Defaults to canonical EEG bands.
+    detrend
+        Remove each channel's offset and linear drift before the FFT
+        (required for DC-coupled hardware such as the Unicorn BCI Core).
+    mains_hz
+        Power-line frequency to exclude from every band, with all its
+        harmonics up to Nyquist (50 Hz in Europe). With dry electrodes the
+        mains hum is otherwise the whole of the gamma band. 0 disables.
+    notch_half_width_hz
+        Half-width of each excluded mains slot.
 
     Returns
     -------
@@ -67,10 +100,14 @@ def compute_band_powers(
 
     bands = bands or BAND_RANGES_HZ
 
+    signal = eeg.astype(np.float64)
+    if detrend:
+        signal = _detrend_linear(signal)
+
     # Apply a Hann window for spectral leakage suppression.
     window = np.hanning(n_samples).astype(np.float64)
     window_norm = np.sum(window ** 2)
-    windowed = eeg.astype(np.float64) * window[:, None]
+    windowed = signal * window[:, None]
 
     # Real FFT.
     fft = np.fft.rfft(windowed, axis=0)
@@ -85,9 +122,22 @@ def compute_band_powers(
     if n_samples % 2 == 0:
         psd[-1] /= 2.0
 
+    # Spectral notch: drop the bins around the mains frequency and its
+    # harmonics. Excluding bins (rather than filtering) has no state and no
+    # start-up transient, so it is exact from the very first window.
+    keep = np.ones_like(freqs, dtype=bool)
+    if mains_hz > 0.0 and len(freqs) > 1:
+        harmonic = float(mains_hz)
+        while harmonic - notch_half_width_hz <= freqs[-1]:
+            keep &= ~(
+                (freqs >= harmonic - notch_half_width_hz)
+                & (freqs <= harmonic + notch_half_width_hz)
+            )
+            harmonic += float(mains_hz)
+
     out: dict[str, np.ndarray] = {}
     for band_name, (lo, hi) in bands.items():
-        mask = (freqs >= lo) & (freqs < hi)
+        mask = (freqs >= lo) & (freqs < hi) & keep
         if not np.any(mask):
             out[band_name] = np.zeros(n_channels, dtype=np.float64)
         else:

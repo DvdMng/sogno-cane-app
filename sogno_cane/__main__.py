@@ -100,13 +100,15 @@ def _live_test(argv: list[str]) -> int:
                 "Start g.tec's sender first:\n"
                 "  Unicorn BCI Core Recorder -> Settings -> Network ->\n"
                 "    'Sending data via UDP'   (default port 1001), or\n"
-                "  Unicorn Suite -> DevTools -> UnicornUDP.exe"
+                "  Unicorn Suite -> DevTools -> UnicornUDP.exe\n"
+                "If only 'Sending data via LSL' is on in the Recorder, also\n"
+                "turn on 'Sending data via UDP': SOGNO_CANE listens on UDP."
             )
             return 1
         for f in found:
             print(
                 f"  found: UDP {f['port']} - {f['channels']} channels "
-                f"({f['layout']})"
+                f"({f['layout']}, {f.get('encoding', '?')})"
             )
         port = int(found[0]["port"])
         print(f"Listening on the first one (UDP {port})...")
@@ -118,23 +120,51 @@ def _live_test(argv: list[str]) -> int:
         print(f"Cannot listen on UDP {port}: {exc}")
         return 1
     try:
+        import numpy as np
+
         deadline = time.monotonic() + 5.0
-        peak = 0.0
+        chunks = []
         while time.monotonic() < deadline:
             pkt = src.next_packet()
             if pkt is not None:
-                peak = max(peak, float(abs(pkt.eeg).max()))
+                chunks.append(pkt.samples.copy())
         st = src.stats
         print(
             f"UDP {st['port']}: {st['datagrams']} datagrams, "
             f"{st['samples']} samples, layout {st['layout']} "
-            f"({st['channels']} channels), dropped {st['dropped']}, "
-            f"malformed {st['malformed']}"
+            f"({st['channels']} channels, {st['encoding'] or '?'}), "
+            f"dropped {st['dropped']}, malformed {st['malformed']}"
         )
-        print(f"peak EEG amplitude: {peak:.1f} uV")
         if st["samples"] == 0:
             print("NO DATA - the sender is not transmitting to this port.")
             return 1
+        data = np.vstack(chunks)
+        live = data[data[:, 16] >= 0.5]          # samples flagged valid
+        lost = 1.0 - live.shape[0] / max(1, data.shape[0])
+        if live.shape[0] >= 8:
+            eeg = live[:, :8].astype(np.float64)
+            offset = eeg.mean(axis=0)
+            centred = eeg - offset
+            rms = centred.std(axis=0)
+            # Unicorns are DC-coupled: the raw level is the electrode
+            # offset; the brain signal is the (much smaller) part around it.
+            print("electrode offset (uV): "
+                  + ", ".join(f"{v:.0f}" for v in offset))
+            print("signal around it, rms (uV): "
+                  + ", ".join(f"{v:.1f}" for v in rms))
+            # Separate the mains hum (what the analysis ignores) from EEG,
+            # so a noisy electrode is told apart from a strong signal.
+            spec = np.fft.rfft(centred, axis=0)
+            freqs = np.fft.rfftfreq(centred.shape[0], 1.0 / src.sample_rate_hz)
+            hum = np.zeros_like(freqs, dtype=bool)
+            for h in (50.0, 100.0):
+                hum |= np.abs(freqs - h) <= 2.0
+            eeg_only = spec.copy()
+            eeg_only[hum] = 0.0
+            clean = np.fft.irfft(eeg_only, n=centred.shape[0], axis=0)
+            print("of which EEG without 50 Hz hum, rms (uV): "
+                  + ", ".join(f"{v:.1f}" for v in clean.std(axis=0)))
+        print(f"samples lost or not yet received: {lost * 100:.0f}%")
         print("live acquisition OK")
         return 0
     finally:

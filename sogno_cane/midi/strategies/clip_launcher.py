@@ -15,6 +15,7 @@ import numpy as np
 from sogno_cane.eeg.bands import BandPowers
 from sogno_cane.midi.context import WindowContext
 from sogno_cane.midi.mapper import MappingEvent
+from sogno_cane.midi.pacing import BurstDetector
 
 
 @dataclass
@@ -36,6 +37,14 @@ class ClipLauncherStrategy:
     channel: int = 0   # unused; per-rule channel used instead
     name: str = "ClipLauncher"
     enabled: bool = True
+    # Adaptive mode (default): each rule fires when its band rises this many
+    # typical deviations above its own recent baseline (see BurstDetector),
+    # whatever the amplifier's absolute scale. The fixed 60 uV^2 rule
+    # thresholds were tuned on the simulator; a real Unicorn's theta/gamma
+    # sit at ~4-10 uV^2 (measured) and almost never launched a clip.
+    # False = the absolute per-rule thresholds (old behaviour).
+    adaptive: bool = True
+    relative_threshold: float = 3.0
 
     _armed: dict[int, bool] = field(
         default_factory=dict, init=False, repr=False,
@@ -46,6 +55,16 @@ class ClipLauncherStrategy:
     _held: list[tuple[int, int]] = field(
         default_factory=list, init=False, repr=False,
     )
+    _bursts: dict[int, BurstDetector] = field(
+        default_factory=dict, init=False, repr=False,
+    )
+
+    def _burst(self, idx: int) -> BurstDetector:
+        b = self._bursts.get(idx)
+        if b is None:
+            b = BurstDetector()
+            self._bursts[idx] = b
+        return b
 
     def on_window(
         self,
@@ -83,7 +102,18 @@ class ClipLauncherStrategy:
             locked = (t - last_fire) < max(0.0, rule.min_interval_seconds)
             armed = self._armed.get(idx, True)
 
-            if armed and power >= rule.threshold_uv2 and not locked:
+            if self.adaptive:
+                z = self._burst(idx).score(
+                    float(np.log10(max(power, 1e-6))), ctx.hop_seconds,
+                )
+                thr = max(0.0, self.relative_threshold)
+                above = z >= thr
+                rearm = z <= thr * rule.release_ratio
+            else:
+                above = power >= rule.threshold_uv2
+                rearm = power <= rule.threshold_uv2 * rule.release_ratio
+
+            if armed and above and not locked:
                 events.append(MappingEvent(
                     kind="note_on",
                     channel=rule.midi_channel,
@@ -93,10 +123,7 @@ class ClipLauncherStrategy:
                 self._held.append((rule.midi_channel, rule.midi_note))
                 self._armed[idx] = False
                 self._last_fire_t[idx] = t
-            elif (
-                not armed
-                and power <= rule.threshold_uv2 * rule.release_ratio
-            ):
+            elif not armed and rearm:
                 self._armed[idx] = True
         return events
 

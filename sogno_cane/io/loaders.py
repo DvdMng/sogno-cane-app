@@ -60,13 +60,75 @@ def load_eeg(path: str, default_rate_hz: float = _DEFAULT_RATE) -> LoadedEEG:
     ext = os.path.splitext(path)[1].lower()
     name = os.path.basename(path)
     if ext in (".edf", ".bdf", ".rec"):
-        return _from_edf(path, name)
-    if ext == ".npz":
-        return _from_npz(path, name, default_rate_hz)
-    if ext == ".npy":
-        return _from_npy(path, name, default_rate_hz)
-    # Treat everything else as delimited text.
-    return _from_text(path, name, default_rate_hz)
+        loaded = _from_edf(path, name)
+    elif ext == ".npz":
+        loaded = _from_npz(path, name, default_rate_hz)
+    elif ext == ".npy":
+        loaded = _from_npy(path, name, default_rate_hz)
+    else:
+        # Treat everything else as delimited text.
+        loaded = _from_text(path, name, default_rate_hz)
+    return _adapt_gtec_recorder(loaded)
+
+
+# --------------------------------------------------------------------------- #
+# g.tec Unicorn Recorder files                                                 #
+# --------------------------------------------------------------------------- #
+_GTEC_TECH_COLUMNS = {
+    "SATURATION", "SAT", "CNT", "BAT", "VALID", "DT", "TRIG", "STATUS",
+}
+
+
+def _adapt_gtec_recorder(loaded: LoadedEEG) -> LoadedEEG:
+    """Keep only the EEG of a Unicorn (BCI Core) Recorder CSV/BDF file.
+
+    The Recorder writes its EEG as ``EXG 1``..``EXG 8`` followed by
+    technical columns (saturation flags, sample counter, battery, VALID,
+    burst timing, trigger). Those are not brain signals: before this, files
+    played back only because the EEG happens to come first. Samples the
+    amplifier flagged as lost (VALID = 0) are bridged by holding the last
+    valid sample, for the same reason as on the live stream.
+    """
+    names = [str(n).strip().upper() for n in loaded.channel_names]
+    eeg_idx = []
+    for k in range(1, 17):
+        for prefix in ("EXG", "EEG"):
+            label = f"{prefix} {k}"
+            if label in names:
+                eeg_idx.append(names.index(label))
+                break
+    tech = [n for n in names if n in _GTEC_TECH_COLUMNS]
+    if len(eeg_idx) < 1 or not tech:
+        return loaded
+
+    data = loaded.data
+    eeg = np.array(data[:, eeg_idx], dtype=np.float64, copy=True)
+    bridged = 0
+    if "VALID" in names:
+        valid = data[:, names.index("VALID")]
+        last = None
+        for i in range(eeg.shape[0]):
+            if valid[i] < 0.5:
+                if last is not None:
+                    eeg[i] = last
+                bridged += 1
+            else:
+                last = eeg[i]
+    meta = dict(loaded.meta)
+    meta.update({
+        "gtec_recorder": True,
+        "technical_columns": [loaded.channel_names[names.index(n)]
+                              for n in tech],
+        "lost_samples_bridged": bridged,
+    })
+    return LoadedEEG(
+        data=eeg,
+        sample_rate_hz=loaded.sample_rate_hz,
+        channel_names=[loaded.channel_names[i] for i in eeg_idx],
+        source_name=loaded.source_name,
+        physical_dim=loaded.physical_dim,
+        meta=meta,
+    )
 
 
 # --------------------------------------------------------------------------- #

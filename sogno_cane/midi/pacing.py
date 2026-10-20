@@ -68,6 +68,66 @@ class AdaptiveNorm:
 
 
 # --------------------------------------------------------------------------- #
+# Burst detection (scale-free event thresholds)                               #
+# --------------------------------------------------------------------------- #
+@dataclass
+class BurstDetector:
+    """How unusual is this value, relative to the signal's own recent past?
+
+    Tracks a slow baseline of a streaming scalar (a log band power) and its
+    typical deviation, and reports each new value as a deviation score:
+    0 = ordinary, 2 = two typical deviations above normal. Event strategies
+    fire on that score, so a threshold means the same thing on the
+    simulator, on a real Unicorn with dry electrodes, or with gel — unlike a
+    fixed uV^2 level, which was tuned on the simulator and never fired on
+    real data (measured: 0 events/min).
+
+    :class:`AdaptiveNorm` is the wrong tool here: it stretches the recent
+    range to fill 0..1 for pitch mapping, so every new local maximum reads
+    as 1.0 and an "event" fires many times a minute whatever the threshold.
+    """
+
+    tau_seconds: float = 20.0
+    # Windows (0.1 s each) spent learning before any score is reported.
+    warmup_windows: int = 20
+    _mean: Optional[float] = field(default=None, repr=False)
+    _dev: Optional[float] = field(default=None, repr=False)
+    _n: int = field(default=0, repr=False)
+
+    def reset(self) -> None:
+        self._mean = None
+        self._dev = None
+        self._n = 0
+
+    def score(self, x: float, dt: float) -> float:
+        """Deviation score of ``x`` against the past, then learn from it.
+
+        Scoring happens *before* learning, so a burst is measured against
+        the quiet baseline that preceded it rather than against itself.
+
+        Start-up: the baseline is an exact running average until it has as
+        much history as the moving average would weigh (``1/n`` beats the
+        EMA rate), and nothing fires during a short warm-up. Without this a
+        guessed initial deviation made events fire ~3x too often for the
+        first ~20 s of every session (measured on real recordings).
+        """
+        if self._mean is None or self._dev is None:
+            self._mean = x
+            self._dev = 0.0
+            self._n = 1
+            return 0.0
+        z = 0.0
+        if self._n >= self.warmup_windows:
+            z = (x - self._mean) / max(self._dev, 1e-3)
+        self._n += 1
+        ema = min(1.0, max(0.0, dt) / max(1e-6, self.tau_seconds))
+        a = max(ema, 1.0 / self._n)
+        self._mean += a * (x - self._mean)
+        self._dev += a * (abs(x - self._mean) - self._dev)
+        return z
+
+
+# --------------------------------------------------------------------------- #
 # Note gate (rate limiting + hysteresis)                                       #
 # --------------------------------------------------------------------------- #
 @dataclass

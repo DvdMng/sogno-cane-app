@@ -10,22 +10,22 @@ MIDI inviabile a qualsiasi DAW (Ableton, ecc.) tramite una porta MIDI virtuale
 
 ---
 
-## Collegare un EEG vero (Unicorn)
+## Collegare un EEG vero (Unicorn BCI Core)
 
-L'app legge un **Unicorn** in tempo reale attraverso lo stream di rete che gli
-strumenti g.tec già forniscono — non serve installare nulla in più.
+L'app legge le cuffie **Unicorn BCI Core** in tempo reale attraverso lo
+stream di rete del **Unicorn BCI Core Recorder** di g.tec.
 
-1. Accendi il dispositivo e avvia **uno** di questi (entrambi inclusi con la
-   g.tec Suite):
-   * **Unicorn BCI Core Recorder** → `Settings` → `Network` →
-     *Sending data via UDP* (porta predefinita **1001**), oppure
-   * **Unicorn Suite** → `DevTools` → `UnicornUDP.exe` → imposta IP
-     `127.0.0.1` e una porta, poi `Open` → `Start`.
-2. In SOGNO_CANE premi **LIVE EEG** sul pannello del dispositivo: la porta e
-   il formato dei canali vengono riconosciuti da soli.
-3. Con **due** EEG (umano + cane) usa **una porta per ciascuno** — per esempio
-   1001 per l'umano e 1002 per il cane — e premi LIVE EEG su entrambi i
-   pannelli. Ogni dispositivo ha il suo motore e la sua porta MIDI.
+0. **Una volta sola:** la *g.tec Suite 2024* installa solo un launcher con le
+   licenze. Aprilo, inserisci License Key ed e-mail ricevute da g.tec con
+   l'acquisto, premi *Activate* e scarica il **Unicorn BCI Core Recorder**.
+1. Nel Recorder: *Connect* alla cuffia → `Settings` → `Network` →
+   *Sending data via UDP* (IP `127.0.0.1`, porta **1001**) → *Play*.
+   Se è attivo solo LSL, attiva anche UDP. Filtri: meglio spenti — l'app
+   toglie da sola offset degli elettrodi e ronzio a 50 Hz.
+2. In SOGNO_CANE premi **EEG DAL VIVO** sul pannello: porta e formato si
+   riconoscono da soli.
+3. Con **due** cuffie (umano + cane): due Recorder, **una porta ciascuno**
+   (1001 umano, 1002 cane), EEG DAL VIVO su entrambi i pannelli.
 
 Verifica rapida senza aprire l'app:
 
@@ -33,10 +33,25 @@ Verifica rapida senza aprire l'app:
 python -m sogno_cane --live-test
 ```
 
-Formati riconosciuti automaticamente: 17 canali (Unicorn UDP Interface,
-identico al formato interno dell'app), 14 canali (BCI Core Recorder con tutte
-le colonne) e il caso di soli 8 canali EEG. Le registrazioni **CSV** e
-**BDF+** del Recorder si riproducono con **LOAD FILE**.
+Formati riconosciuti automaticamente: **testo** del BCI Core Recorder (righe
+CSV `EXG 1..8, SATURATION, CNT, BAT, VALID, DT, TRIG`, anche con colonne
+disattivate) e **binario** a 17 float dell'Unicorn UDP Interface (Hybrid
+Black). Le registrazioni **CSV** e **BDF+** del Recorder si riproducono con
+**FILE**. Guida completa: `portable/EEG_COLLEGAMENTO.txt`.
+
+## Novità della versione 0.9.0
+
+* **Pronto per le cuffie Unicorn BCI Core vere**, verificato sulle
+  registrazioni ufficiali del dispositivo e sul codice dei ricevitori g.tec:
+  legge il formato testo del BCI Core Recorder, toglie da solo l'offset
+  degli elettrodi (il dispositivo è accoppiato in DC) e il ronzio di rete a
+  50 Hz, ricuce i campioni persi dal Bluetooth.
+* **EVENTI e CLIP adattivi**: scattano quando la banda sale molto sopra la
+  sua norma recente, qualunque sia la cuffia — prima, con l'EEG vero,
+  restavano mute.
+* **Forma d'onda e file del Recorder** corretti con i dati reali;
+  diagnostica `--live-test` che mostra offset, segnale e ronzio per
+  elettrodo.
 
 ## Novità della versione 0.8.0
 

@@ -126,8 +126,11 @@ def test_threshold_trigger_balanced_on_off():
     from sogno_cane.midi.strategies.threshold_trigger import (
         ThresholdTriggerStrategy,
     )
+    # Absolute mode on purpose: a 1 uV^2 threshold keeps the trigger
+    # latched, which is the on/off bookkeeping this test is about.
     strat = ThresholdTriggerStrategy(
         band="alpha", threshold_uv2=1.0, release_ratio=0.6, channel=9, seed=0,
+        adaptive=False,
     )
     events = _run([strat], n_packets=200)
     kinds = Counter(e.kind for e in events)

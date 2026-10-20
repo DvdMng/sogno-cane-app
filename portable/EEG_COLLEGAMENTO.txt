@@ -1,87 +1,112 @@
-SOGNO_CANE - COLLEGARE GLI EEG VERI (g.tec Unicorn)
-====================================================
+SOGNO_CANE - COLLEGARE GLI EEG VERI (g.tec Unicorn BCI Core)
+============================================================
 
-SOGNO_CANE legge l'EEG in tempo reale attraverso lo stream di rete che i
-programmi g.tec gia' forniscono. Non devi installare nient'altro: usi il
-software arrivato con il dispositivo, e SOGNO_CANE lo ascolta.
-
-
-PRIMA VOLTA, PASSO PASSO
-------------------------
-
-1) Accendi l'Unicorn e collegalo al PC (Bluetooth), come da manuale g.tec.
-
-2) Avvia UNO di questi due programmi:
-
-   A) Unicorn BCI Core Recorder      <- consigliato
-      - collega il dispositivo (Connect)
-      - Settings -> Network -> "Sending data via UDP"
-      - IP  : 127.0.0.1
-      - Port: 1001            (per il SECONDO dispositivo usa 1002)
-      - premi Play per far partire l'acquisizione
-
-   B) Unicorn Suite -> DevTools -> UnicornUDP.exe
-      - scegli il dispositivo dal menu a tendina
-      - IP 127.0.0.1, Port 1001   (secondo dispositivo: 1002)
-      - Open, poi Start
-
-3) Apri SOGNO_CANE e premi il pulsante  LIVE EEG  sul pannello del
-   dispositivo (HUMAN o DOG).
-
-   L'app cerca da sola la porta e riconosce il formato dei canali.
-   Se trova piu' di uno stream ti chiede quale usare.
-
-4) Collega la porta MIDI come sempre (REFRESH -> CONNECT su loopMIDI) e
-   suona.
+SOGNO_CANE legge l'EEG in tempo reale attraverso lo stream di rete del
+programma g.tec che gestisce le cuffie: l'Unicorn BCI Core Recorder.
+SOGNO_CANE riconosce da solo porta e formato dei dati.
 
 
-DUE EEG INSIEME (UMANO + CANE)
-------------------------------
+1) UNA VOLTA SOLA: OTTENERE IL BCI CORE RECORDER
+------------------------------------------------
 
-Ogni dispositivo ha bisogno della SUA porta UDP. La combinazione collaudata:
+Il pacchetto "g.tec Suite 2024" installa solo un launcher con le licenze.
+Il Recorder vero si scarica da li' dopo l'attivazione:
 
-   umano -> porta 1001 -> pannello HUMAN -> porta MIDI 1
-   cane  -> porta 1002 -> pannello DOG   -> porta MIDI 2
+   - apri "g.tec Suite 2024" (menu Start)
+   - inserisci License Key ed E-Mail ricevute da g.tec via email con
+     l'acquisto dei dispositivi, poi premi Activate
+   - dall'elenco dei prodotti scarica e installa
+     "Unicorn BCI Core Recorder"
 
-Servono due istanze del programma g.tec (una per dispositivo), ognuna con la
-propria porta. Poi premi LIVE EEG su entrambi i pannelli di SOGNO_CANE.
+Nota sulla licenza g.tec: si possono usare tante sessioni del programma
+quante copie si hanno in licenza. Con DUE cuffie aperte insieme servono
+due sessioni del Recorder: verifica di averne diritto (di solito una
+licenza per dispositivo).
 
 
-SE NON ARRIVA NIENTE
---------------------
+2) OGNI VOLTA: FAR PARTIRE I DATI
+---------------------------------
 
-Nella riga di stato del pannello compare:
+Nel Unicorn BCI Core Recorder:
 
-   "LIVE EEG - silent for Ns (is the g.tec sender running?)"
+   - accendi la cuffia, selezionala e premi Connect
+   - Settings -> Network -> attiva "Sending data via UDP"
+        IP   : 127.0.0.1
+        Port : 1001           (per la SECONDA cuffia usa 1002)
+   - premi Play per far partire l'acquisizione
 
-Vuol dire che SOGNO_CANE sta ascoltando ma sul filo non passa nulla.
+   ATTENZIONE: SOGNO_CANE ascolta UDP. Se nel Recorder e' attivo solo
+   "Sending data via LSL", attiva anche "Sending data via UDP".
+
+Poi in SOGNO_CANE:
+
+   - premi EEG DAL VIVO sul pannello UMANO o CANE
+   - l'app trova da sola la porta e riconosce il Recorder
+   - collega il MIDI come sempre (COLLEGA su loopMIDI) e premi AVVIA
+
+
+3) FILTRI DEL RECORDER: MEGLIO SPENTI
+-------------------------------------
+
+Le cuffie BCI Core sono "accoppiate in DC": ogni elettrodo arriva con un
+offset di decine di migliaia di microvolt, e con elettrodi a secco c'e'
+molto ronzio della rete elettrica a 50 Hz. SOGNO_CANE toglie da solo sia
+l'offset sia i 50 Hz, quindi:
+
+   - CONSIGLIATO: filtri del Recorder spenti (dati grezzi)
+   - se vuoi filtrare, NON usare un passa-banda che finisce a 30 Hz:
+     taglia via tutta la banda gamma (e le voci che la usano tacciono).
+     Va bene un passa-banda fino a 50 Hz.
+   - con i filtri accesi, i primi secondi dopo il Play possono essere un
+     po' agitati (il filtro si assesta): e' normale.
+
+
+4) DUE EEG INSIEME (UMANO + CANE)
+---------------------------------
+
+Ogni cuffia ha bisogno del SUO Recorder e della SUA porta UDP:
+
+   umano -> Recorder 1 -> porta 1001 -> pannello UMANO -> porta MIDI 1
+   cane  -> Recorder 2 -> porta 1002 -> pannello CANE  -> porta MIDI 2
+
+Premi EEG DAL VIVO su entrambi i pannelli: se l'app trova due segnali ti
+chiede quale va su quel pannello.
+
+
+5) SE NON ARRIVA NIENTE
+-----------------------
+
+La riga di stato del pannello lo dice in rosa:
+
+   "EEG DAL VIVO - silenzio da Ns (il programma g.tec sta trasmettendo?)"
+
 Controlla, in quest'ordine:
 
-   1. il programma g.tec sta trasmettendo? (Start premuto, non solo Open)
-   2. la porta e' la stessa nei due programmi?
-   3. l'IP di destinazione e' 127.0.0.1 (stesso PC)?
+   1. nel Recorder e' stato premuto Play (non solo Connect)?
+   2. "Sending data via UDP" e' attivo, IP 127.0.0.1?
+   3. la porta e' la stessa nel Recorder e in SOGNO_CANE?
 
-Per una verifica rapida senza aprire l'app, apri il Prompt dei comandi nella
-cartella di SOGNO_CANE e lancia:
+Verifica rapida senza aprire l'app: Prompt dei comandi nella cartella di
+SOGNO_CANE, poi
 
    runtime\python.exe -m sogno_cane --live-test
 
-Ti dice se arrivano dati, su quale porta, con quale formato e con quale
-ampiezza di segnale.
+Dice se arrivano dati, su quale porta, da quale programma, l'offset di
+ogni elettrodo, l'ampiezza del segnale EEG (senza ronzio di rete) e quanti
+campioni si perdono via Bluetooth. Un elettrodo con molto piu' ronzio
+degli altri di solito ha un contatto da sistemare.
 
 
-COSE CHE E' UTILE SAPERE
-------------------------
+COSE UTILI DA SAPERE
+--------------------
 
-- Se il segnale si interrompe (Bluetooth, batteria, programma chiuso)
-  SOGNO_CANE NON si ferma: resta in ascolto e riprende da solo appena i dati
-  tornano. Lo stato te lo dice chiaramente.
-
-- I filtri (notch 50 Hz, passa-banda) conviene attivarli nel Recorder g.tec:
-  arrivano gia' puliti a SOGNO_CANE.
-
-- Le registrazioni fatte col Recorder (CSV o BDF) si riascoltano in
-  SOGNO_CANE con LOAD FILE, e passano nello stesso identico motore musicale.
-
-- Il simulatore resta disponibile: premi USE SIM per tornarci (utile per
-  provare il set senza indossare niente).
+- Se il Bluetooth perde qualche campione (VALID = 0) SOGNO_CANE tiene
+  l'ultimo valore buono invece di "saltare": niente esplosioni di note.
+- Se il segnale si interrompe, SOGNO_CANE NON si ferma: resta in ascolto e
+  riprende da solo appena i dati tornano.
+- Le registrazioni del Recorder (CSV o BDF) si riascoltano con FILE e
+  passano nello stesso identico motore musicale.
+- Le voci EVENTI e CLIP ora scattano in modo "adattivo": quando la banda
+  sale molto sopra la sua norma recente, qualunque sia la cuffia. La
+  soglia fissa in uV^2 resta disponibile togliendo la spunta "adattiva".
+- Il simulatore resta disponibile (SIMULATORE) per provare senza cuffie.

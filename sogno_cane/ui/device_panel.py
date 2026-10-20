@@ -55,6 +55,15 @@ from sogno_cane.ui.waveform_widget import WaveformWidget
 _MAX_RECORD_SECONDS = 30 * 60
 
 
+def _sender_name(layout: str) -> str:
+    """Human name of the g.tec tool behind a detected channel layout."""
+    return {
+        "recorder-14": "BCI Core Recorder",
+        "unicorn-17": "Unicorn UDP Interface",
+        "eeg-only": "solo EEG",
+    }.get(layout, layout)
+
+
 class DevicePanel(QWidget):
     """Single-device control + viz panel."""
 
@@ -536,7 +545,8 @@ class DevicePanel(QWidget):
             return int(found[0]["port"])
         if len(found) > 1:
             labels = [
-                f"UDP {f['port']}  —  {f['channels']} canali ({f['layout']})"
+                f"UDP {f['port']}  —  {f['channels']} canali "
+                f"({_sender_name(f['layout'])}, {f.get('encoding', '')})"
                 for f in found
             ]
             choice, ok = QInputDialog.getItem(
@@ -787,7 +797,10 @@ class DevicePanel(QWidget):
         if self._live is not None:
             lst = self._live.stats
             if self._live.has_signal:
-                parts.append(f"EEG dal vivo {lst['samples']} campioni")
+                parts.append(
+                    f"EEG dal vivo {lst['samples']} campioni "
+                    f"({_sender_name(lst['layout'])}, {lst['encoding']})"
+                )
             else:
                 parts.append("EEG dal vivo NESSUN DATO")
                 trouble = True

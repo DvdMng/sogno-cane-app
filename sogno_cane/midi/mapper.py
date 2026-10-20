@@ -91,6 +91,8 @@ class MappingConfig:
     sample_rate_hz: int = 250
     window_seconds: float = 1.0
     hop_seconds: float = 0.1     # window evaluation cadence
+    # Power-line frequency excluded from every band (Italy: 50 Hz; 0 = off).
+    mains_hz: float = 50.0
 
     @property
     def window_samples(self) -> int:
@@ -130,6 +132,9 @@ class MappingEngine:
         self._total_samples: int = 0
         # Cache of whether each strategy accepts a context argument.
         self._accepts_ctx: dict[int, bool] = {}
+        # Last sample flagged valid, used to bridge samples the hardware
+        # marks as lost (VALID = 0).
+        self._last_good: Optional[np.ndarray] = None
 
     @property
     def config(self) -> MappingConfig:
@@ -160,6 +165,7 @@ class MappingEngine:
         self.clear_buffer()
         self._t_seconds = 0.0
         self._total_samples = 0
+        self._last_good = None
 
     def reset_strategy_state(self) -> None:
         """Clear per-run runtime state on every attached strategy.
@@ -192,9 +198,42 @@ class MappingEngine:
     # Core                                                                #
     # ------------------------------------------------------------------ #
 
+    def _bridge_lost_samples(self, packet, eeg: np.ndarray) -> np.ndarray:
+        """Hold the last valid sample across samples flagged as lost.
+
+        A Unicorn marks samples hit by Bluetooth data loss with VALID = 0.
+        On DC-coupled hardware their content (often zero) next to a real
+        sample tens of thousands of microvolts away is a giant step, which
+        the spectrum reads as a burst on every band at once — every voice
+        would fire together. Sample-and-hold turns a dropout into a flat
+        line instead: honest silence, no explosion.
+        """
+        try:
+            valid = np.asarray(packet.validation)
+        except Exception:
+            return eeg
+        if valid.shape[0] != eeg.shape[0]:
+            return eeg
+        bad = valid < 0.5
+        if not bad.any():
+            self._last_good = eeg[-1].copy()
+            return eeg
+        out = eeg.copy()
+        last = self._last_good
+        for i in range(out.shape[0]):
+            if bad[i]:
+                if last is not None:
+                    out[i] = last
+            else:
+                last = out[i]
+        if last is not None:
+            self._last_good = np.array(last, copy=True)
+        return out
+
     def process_packet(self, packet) -> list[MappingEvent]:
         """Push a packet through the engine; return triggered MIDI events."""
         eeg = packet.eeg.astype(np.float64, copy=False)
+        eeg = self._bridge_lost_samples(packet, eeg)
         n = eeg.shape[0]
         self._buffer.append(eeg)
         self._buffered_samples += n
@@ -223,7 +262,11 @@ class MappingEngine:
         self._samples_since_last_window = 0
 
         eeg_window = self._tail(win)
-        bands = compute_band_powers(eeg_window, self._config.sample_rate_hz)
+        bands = compute_band_powers(
+            eeg_window,
+            self._config.sample_rate_hz,
+            mains_hz=getattr(self._config, "mains_hz", 50.0),
+        )
         ctx = WindowContext(
             t_seconds=self._t_seconds,
             hop_seconds=self._config.hop_seconds,

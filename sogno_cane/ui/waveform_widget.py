@@ -16,6 +16,56 @@ from sogno_cane.eeg.unicorn_packet import UnicornPacket
 from sogno_cane.ui.theme import ACCENT_CYAN, ACCENT_PINK, BG_DEEP, TEXT_DIM
 
 
+class _DisplayCleaner:
+    """Causal per-channel DC blocker + mains notch, for the display only.
+
+    A real Unicorn is DC-coupled: each electrode rides on an offset of tens
+    of thousands of microvolts, so raw traces land far outside the plot (it
+    showed nothing at all). Dry electrodes also pick up 100-170 uV of mains
+    hum. This shows what the analysis actually looks at: offset removed,
+    50/100 Hz notched. Stateful and causal, so there is no edge effect; the
+    blocker is seeded with the first sample, so there is no start-up spike.
+    """
+
+    def __init__(self, n_channels: int, fs: float, mains_hz: float = 50.0):
+        self._r_dc = 0.995                     # ~0.2 Hz high-pass at 250 Hz
+        self._x_prev: np.ndarray | None = None
+        self._y_prev = np.zeros(n_channels)
+        self._notches: list[tuple[float, float, float, float, float]] = []
+        self._states: list[np.ndarray] = []
+        if mains_hz > 0.0:
+            harmonic = mains_hz
+            while harmonic < fs / 2.0:
+                self._notches.append(self._design_notch(harmonic, fs))
+                self._states.append(np.zeros((2, n_channels)))
+                harmonic += mains_hz
+
+    @staticmethod
+    def _design_notch(f0: float, fs: float, bandwidth_hz: float = 4.0):
+        w0 = 2.0 * np.pi * f0 / fs
+        r = 1.0 - np.pi * bandwidth_hz / fs
+        c = np.cos(w0)
+        gain = (1.0 - 2.0 * r * c + r * r) / (2.0 - 2.0 * c)   # unity at DC
+        return (gain, -2.0 * c * gain, gain, -2.0 * r * c, r * r)
+
+    def process(self, x: np.ndarray) -> np.ndarray:
+        out = np.empty_like(x, dtype=np.float64)
+        for i in range(x.shape[0]):
+            xi = x[i].astype(np.float64)
+            if self._x_prev is None:
+                self._x_prev = xi.copy()
+            v = xi - self._x_prev + self._r_dc * self._y_prev
+            self._x_prev = xi
+            self._y_prev = v
+            for (b0, b1, b2, a1, a2), z in zip(self._notches, self._states):
+                o = b0 * v + z[0]
+                z[0] = b1 * v - a1 * o + z[1]
+                z[1] = b2 * v - a2 * o
+                v = o
+            out[i] = v
+        return out
+
+
 def _palette(n: int) -> list[str]:
     # Alternate pink / cyan with subtle brightness variations.
     out: list[str] = []
@@ -77,6 +127,7 @@ class WaveformWidget(QWidget):
             for _ in profile.channel_names
         ]
         self._x_axis = np.arange(self._n_visible)
+        self._cleaner = _DisplayCleaner(len(profile.channel_names), self._fs)
 
         self.setMinimumHeight(160)
         layout = QVBoxLayout(self)
@@ -84,9 +135,9 @@ class WaveformWidget(QWidget):
         layout.addWidget(self._plot)
 
     def push_packet(self, packet: UnicornPacket) -> None:
-        eeg = packet.eeg
+        eeg = self._cleaner.process(packet.eeg)
         for ch, buf in enumerate(self._buffers):
-            buf.extend(eeg[:, ch].astype(float).tolist())
+            buf.extend(eeg[:, ch].tolist())
 
     def repaint_traces(self) -> None:
         for ch, buf in enumerate(self._buffers):

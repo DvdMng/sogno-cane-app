@@ -1,27 +1,35 @@
 """Live acquisition from a real Unicorn device over the network.
 
-The app never talks to the Bluetooth dongle itself: g.tec already ships
+The app never talks to the Bluetooth link itself: g.tec already ships
 applications that own the device and forward its samples over the network,
 and we consume that stream. This keeps the portable bundle dependency-free
 (UDP needs nothing but the standard library) and works with every Unicorn
 generation, because g.tec's own tool handles the hardware.
 
-Supported senders
------------------
-* **Unicorn UDP Interface** (Unicorn Suite -> DevTools -> ``UnicornUDP.exe``)
-  sends one sample per datagram as **17 little-endian float32** =
-  ``EEG1..8, ACC X/Y/Z, GYR X/Y/Z, BAT, CNT, VALID`` (68 bytes). That is
-  byte-for-byte the layout of
-  :class:`~sogno_cane.eeg.unicorn_packet.UnicornPacket`, so those datagrams
-  need no translation at all.
-* **Unicorn BCI Core Recorder** (g.tec Suite 2024, "Network settings" ->
-  "Sending data via UDP", default port 1001) sends the channels enabled in
-  its Acquisition settings, always starting with the 8 EEG channels, in the
-  documented default order ``EEG1..8, SAT, CNT, BAT, VALID, DT, STATUS``
-  (up to 14 floats). We map those onto the canonical packet.
+Supported senders (both auto-detected, per datagram)
+----------------------------------------------------
+* **Unicorn BCI Core Recorder** (g.tec Suite 2024, Settings -> Network ->
+  "Sending data via UDP", default port 1001) sends **ASCII text**: g.tec's
+  own receiver example (unicorn-bi/Unicorn-BCI-Core-Recorder,
+  ``UDP Receiver/Program.cs``) does nothing but
+  ``Encoding.ASCII.GetString(datagram)``. Each line is one sample in the
+  same serialisation as the Recorder's CSV files, e.g.::
 
-Because both senders lead with the 8 EEG channels as float32, the layout is
-inferred from the datagram size alone -- the user only has to pick a port.
+      49780.490,76867.610,...,44277.860,0.000,1.000,63.000,1.000,0.000,0.000
+
+  i.e. ``EXG 1..8, SATURATION, CNT, BAT, VALID, DT, TRIG`` — comma
+  separated, dot decimals, newline terminated. Columns not enabled in the
+  Recorder's Acquisition settings are omitted, but the 8 EEG channels always
+  come first. A header line (``EXG 1, EXG 2, ...``) is recognised and skipped.
+* **Unicorn UDP Interface** (Unicorn Suite Hybrid Black -> DevTools ->
+  ``UnicornUDP.exe``) sends one sample per datagram as **17 little-endian
+  float32** = ``EEG1..8, ACC X/Y/Z, GYR X/Y/Z, BAT, CNT, VALID`` (68 bytes),
+  byte-for-byte the layout of
+  :class:`~sogno_cane.eeg.unicorn_packet.UnicornPacket`.
+
+Text versus binary is told apart by the bytes themselves: a float32 payload
+is never made only of digits, separators and newlines. The column layout is
+then inferred from the channel count, so the user only has to pick a port.
 
 Design notes
 ------------
@@ -29,17 +37,18 @@ Design notes
   stalled consumer can never grow latency without bound: the oldest samples
   are dropped (and counted) instead.
 * :meth:`UnicornLiveSource.next_packet` never returns ``None`` while the
-  source is open. A gap in the wire yields a silent packet instead, so the
-  engine keeps running and picks the signal back up by itself when the
-  device returns -- losing MIDI because of a two-second dropout is exactly
-  the failure mode this project keeps fighting.
+  source is open. A gap on the wire yields a packet that *holds the last
+  sample* and is flagged invalid — not zeros: on DC-coupled hardware a jump
+  from tens of thousands of microvolts to zero is a giant step that would
+  fire every voice at once. The engine keeps running and picks the signal
+  back up by itself when the device returns.
 """
 from __future__ import annotations
 
 import socket
 import threading
 import time
-from collections import deque
+from collections import Counter, deque
 from typing import Optional
 
 import numpy as np
@@ -53,7 +62,7 @@ from sogno_cane.eeg.unicorn_packet import (
     UnicornPacket,
 )
 
-# Default UDP ports of the two g.tec senders.
+# Default UDP ports of the g.tec senders.
 DEFAULT_UDP_PORT: int = 1001          # BCI Core Recorder "send data" default
 ALT_UDP_PORTS: tuple[int, ...] = (1001, 1002, 1003, 1004, 5001, 1000)
 
@@ -62,8 +71,16 @@ LAYOUT_UNICORN_17 = "unicorn-17"      # UDP Interface / Hybrid Black
 LAYOUT_RECORDER_14 = "recorder-14"    # BCI Core Recorder, full default set
 LAYOUT_EEG_ONLY = "eeg-only"          # any sender trimmed to the EEG channels
 
-# BCI Core Recorder default column order (README "Acquisition settings").
+ENCODING_TEXT = "testo"
+ENCODING_BINARY = "binario"
+
+# BCI Core Recorder default column order (README "Acquisition settings",
+# confirmed on the official recordings: EXG 1..8, SATURATION, CNT, BAT,
+# VALID, DT, TRIG).
 _REC_SAT, _REC_CNT, _REC_BAT, _REC_VALID, _REC_DT, _REC_STATUS = range(8, 14)
+
+# Bytes that may appear in a text sample line (plus header letters).
+_TEXT_OK = frozenset(range(0x20, 0x7F)) | {0x09, 0x0A, 0x0D}
 
 
 def describe_layout(n_channels: int) -> str:
@@ -100,6 +117,91 @@ def frame_to_packet_rows(frame: np.ndarray) -> np.ndarray:
         out[:, BATTERY_INDEX] = 100.0
         out[:, VALIDATION_INDEX] = 1.0
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Datagram decoding                                                           #
+# --------------------------------------------------------------------------- #
+
+def looks_like_text(payload: bytes) -> bool:
+    """True if the payload is plain ASCII text (Recorder), not float32."""
+    return bool(payload) and all(b in _TEXT_OK for b in payload)
+
+
+def _split_fields(line: str) -> list[str]:
+    # Semicolon-separated lines are the European CSV convention, where the
+    # comma is the decimal mark; otherwise the comma separates fields (what
+    # the Recorder actually writes: dot decimals, comma separators).
+    if ";" in line:
+        return [f.strip().replace(",", ".") for f in line.split(";")]
+    if "," in line:
+        return [f.strip() for f in line.split(",")]
+    if "\t" in line:
+        return [f.strip() for f in line.split("\t")]
+    return line.split()
+
+
+def parse_text_datagram(payload: bytes) -> Optional[tuple[np.ndarray, int]]:
+    """Decode a Recorder text datagram.
+
+    Returns ``(frame, header_lines)`` where ``frame`` is
+    ``(n_samples, n_channels)`` float32 (possibly zero rows when the datagram
+    only carried a header), or ``None`` if it is not a usable sample line.
+    """
+    text = payload.replace(b"\x00", b"").decode("ascii", errors="strict")
+    rows: list[list[float]] = []
+    headers = 0
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        fields = [f for f in _split_fields(line) if f != ""]
+        if len(fields) < EEG_CHANNELS:
+            return None              # too few fields to be EEG at all
+        try:
+            rows.append([float(f) for f in fields])
+        except ValueError:
+            # A labelled line ("EXG 1, EXG 2, ...") is the header, not junk.
+            if any(c.isalpha() for c in line):
+                headers += 1
+                continue
+            return None
+    if not rows:
+        return (np.zeros((0, EEG_CHANNELS), dtype=np.float32), headers) \
+            if headers else None
+    # Keep the dominant channel count (a torn line must not poison the rest).
+    n_ch = Counter(len(r) for r in rows).most_common(1)[0][0]
+    frame = np.asarray([r for r in rows if len(r) == n_ch], dtype=np.float32)
+    if not np.all(np.isfinite(frame[:, :EEG_CHANNELS])):
+        return None
+    return frame, headers
+
+
+def parse_binary_datagram(
+    payload: bytes, locked_channels: Optional[int] = None,
+) -> Optional[np.ndarray]:
+    """Decode a float32 datagram (Unicorn UDP Interface) into a frame."""
+    if len(payload) < 4 or len(payload) % 4 != 0:
+        return None
+    n_floats = len(payload) // 4
+    n_ch = locked_channels
+    if n_ch is None or n_floats % n_ch != 0:
+        n_ch = None
+        for candidate in (PACKET_VALUES, 14, EEG_CHANNELS):
+            if n_floats % candidate == 0:
+                n_ch = candidate
+                break
+        if n_ch is None:
+            if n_floats < EEG_CHANNELS:
+                return None
+            n_ch = n_floats          # single sample, unusual channel count
+    flat = np.frombuffer(payload, dtype="<f4")
+    if flat.size % n_ch != 0:
+        return None
+    frame = flat.reshape(-1, n_ch)
+    if not np.all(np.isfinite(frame[:, :EEG_CHANNELS])):
+        return None
+    return frame
 
 
 class UnicornLiveSource:
@@ -150,11 +252,15 @@ class UnicornLiveSource:
         self._samples = 0
         self._dropped = 0
         self._malformed = 0
+        self._header_lines = 0
         self._last_rx_monotonic: Optional[float] = None
         self._layout: Optional[str] = None
         self._layout_channels: Optional[int] = None
+        self._encoding: Optional[str] = None
         self._last_error = ""
         self._counter = 0
+        # Last row handed to the engine: held across gaps on the wire.
+        self._last_row: Optional[np.ndarray] = None
 
     # ------------------------------------------------------------------ #
     # Lifecycle                                                          #
@@ -230,8 +336,10 @@ class UnicornLiveSource:
             "samples": self._samples,
             "dropped": self._dropped,
             "malformed": self._malformed,
+            "header_lines": self._header_lines,
             "layout": self._layout or "(in attesa di dati)",
             "channels": self._layout_channels,
+            "encoding": self._encoding or "",
             "seconds_since_data": self.seconds_since_data,
             "last_error": self._last_error,
         }
@@ -256,6 +364,8 @@ class UnicornLiveSource:
             if rows is None:
                 self._malformed += 1
                 continue
+            if rows.shape[0] == 0:
+                continue             # header-only datagram: nothing to play
             self._datagrams += 1
             self._last_rx_monotonic = time.monotonic()
             with self._lock:
@@ -269,35 +379,37 @@ class UnicornLiveSource:
             self._data_ready.set()
 
     def _parse(self, data: bytes) -> Optional[np.ndarray]:
-        """Decode one datagram into canonical 17-column float32 rows."""
-        if len(data) < 4 or len(data) % 4 != 0:
-            return None
-        n_floats = len(data) // 4
-        # Infer the channel count: reuse the layout already locked in, else
-        # prefer an exact known layout that divides the payload evenly.
-        n_ch = self._layout_channels
-        if n_ch is None or n_floats % n_ch != 0:
-            n_ch = None
-            for candidate in (PACKET_VALUES, 14, EEG_CHANNELS):
-                if n_floats % candidate == 0:
-                    n_ch = candidate
-                    break
-            if n_ch is None:
-                if n_floats < EEG_CHANNELS:
-                    return None
-                n_ch = n_floats      # single sample, unusual channel count
-        try:
-            flat = np.frombuffer(data, dtype="<f4")
-        except Exception:
-            return None
-        if flat.size % n_ch != 0:
-            return None
-        frame = flat.reshape(-1, n_ch)
-        if not np.all(np.isfinite(frame[:, :EEG_CHANNELS])):
-            return None
-        if self._layout_channels != n_ch:
+        """Decode one datagram into canonical 17-column float32 rows.
+
+        Returns ``None`` for an undecodable datagram and an empty array for
+        one that only carried a header line.
+        """
+        # NUL padding is only stripped to *recognise* text: in a float32
+        # datagram trailing zero bytes are real values (0.0 is four NULs),
+        # so binary decoding must always see the original bytes.
+        text_view = data.rstrip(b"\x00")
+        if looks_like_text(text_view):
+            try:
+                parsed = parse_text_datagram(text_view)
+            except UnicodeDecodeError:
+                parsed = None
+            if parsed is None:
+                return None
+            frame, headers = parsed
+            self._header_lines += headers
+            encoding = ENCODING_TEXT
+        else:
+            frame = parse_binary_datagram(data, self._layout_channels)
+            if frame is None:
+                return None
+            encoding = ENCODING_BINARY
+        if frame.shape[0] == 0:
+            return np.zeros((0, PACKET_VALUES), dtype=np.float32)
+        n_ch = frame.shape[1]
+        if self._layout_channels != n_ch or self._encoding != encoding:
             self._layout_channels = n_ch
             self._layout = describe_layout(n_ch)
+            self._encoding = encoding
         return frame_to_packet_rows(frame)
 
     # ------------------------------------------------------------------ #
@@ -308,8 +420,9 @@ class UnicornLiveSource:
         """Return the next chunk, waiting briefly for the device to speak.
 
         Returns ``None`` only once the source is closed. While it is open a
-        gap on the wire produces a silent packet rather than stopping the
-        engine, so playback survives a dropout and resumes on its own.
+        gap on the wire produces a packet that holds the last sample and is
+        flagged invalid, rather than stopping the engine, so playback
+        survives a dropout and resumes on its own.
         """
         if self._closed and self._sock is None:
             return None
@@ -331,14 +444,13 @@ class UnicornLiveSource:
 
         if rows:
             samples = np.asarray(rows, dtype=np.float32)
+            self._last_row = samples[-1].copy()
             if samples.shape[0] < want:
-                pad = np.zeros(
-                    (want - samples.shape[0], PACKET_VALUES), dtype=np.float32
-                )
-                samples = np.vstack([samples, pad])
+                samples = np.vstack([samples, self._hold_rows(
+                    want - samples.shape[0]
+                )])
         else:
-            # Dropout: hand the engine silence, honestly marked invalid.
-            samples = np.zeros((want, PACKET_VALUES), dtype=np.float32)
+            samples = self._hold_rows(want)
 
         # Keep a monotonic counter even when the sender omits one.
         if describe_layout(self._layout_channels or 0) == LAYOUT_EEG_ONLY:
@@ -352,6 +464,33 @@ class UnicornLiveSource:
             sample_rate=self.sample_rate_hz,
         )
 
+    def _hold_rows(self, n: int) -> np.ndarray:
+        """Rows for a gap: the last real sample, held flat, marked invalid."""
+        if self._last_row is not None:
+            rows = np.repeat(self._last_row[None, :], n, axis=0)
+        else:
+            rows = np.zeros((n, PACKET_VALUES), dtype=np.float32)
+        rows = rows.astype(np.float32, copy=True)
+        rows[:, VALIDATION_INDEX] = 0.0
+        return rows
+
+
+def _probe_channels(data: bytes) -> Optional[tuple[int, str]]:
+    """(channel count, encoding) of a datagram, or None if it is not ours."""
+    text_view = data.rstrip(b"\x00")
+    if looks_like_text(text_view):
+        try:
+            parsed = parse_text_datagram(text_view)
+        except UnicodeDecodeError:
+            return None
+        if parsed is None or parsed[0].shape[0] == 0:
+            return None
+        return int(parsed[0].shape[1]), ENCODING_TEXT
+    frame = parse_binary_datagram(data)
+    if frame is None:
+        return None
+    return int(frame.shape[1]), ENCODING_BINARY
+
 
 def probe_udp_ports(
     ports: tuple[int, ...] = ALT_UDP_PORTS,
@@ -360,8 +499,9 @@ def probe_udp_ports(
 ) -> list[dict]:
     """Listen briefly on candidate ports and report which ones carry data.
 
-    This is the plug-and-play helper: start the g.tec sender, hit DETECT,
-    and the app finds the port and channel layout by itself.
+    This is the plug-and-play helper: start the g.tec sender, hit EEG DAL
+    VIVO, and the app finds the port, the encoding and the channel layout
+    by itself.
     """
     found: list[dict] = []
     socks: dict = {}
@@ -386,19 +526,16 @@ def probe_udp_ports(
                     data, _ = s.recvfrom(65535)
                 except (BlockingIOError, OSError):
                     continue
-                if len(data) >= 32 and len(data) % 4 == 0:
-                    seen[p] = len(data) // 4
+                info = _probe_channels(data)
+                if info is not None:
+                    seen[p] = info
             time.sleep(0.01)
-        for p, n_floats in seen.items():
-            n_ch = next(
-                (c for c in (PACKET_VALUES, 14, EEG_CHANNELS)
-                 if n_floats % c == 0),
-                n_floats,
-            )
+        for p, (n_ch, encoding) in seen.items():
             found.append({
                 "port": p,
                 "channels": n_ch,
                 "layout": describe_layout(n_ch),
+                "encoding": encoding,
             })
     finally:
         for s in socks.values():

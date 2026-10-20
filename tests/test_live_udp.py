@@ -342,7 +342,8 @@ def test_live_test_cli_reports_a_running_stream(capsys):
     assert rc == 0, out
     assert "live acquisition OK" in out
     assert LAYOUT_UNICORN_17 in out
-    assert "peak EEG amplitude" in out
+    assert "electrode offset" in out
+    assert "signal around it" in out
 
 
 def test_live_test_cli_reports_silence_clearly(capsys):

@@ -1,5 +1,64 @@
 # Changelog
 
+## 0.9.0 — pronto per le cuffie vere: verificato sui dati reali del BCI Core
+Studiando la g.tec Suite 2024 arrivata con i dispositivi, il codice sorgente
+ufficiale dei ricevitori g.tec e le registrazioni pubbliche fatte col
+Unicorn BCI Core, è emerso che la 0.8.0 **non era compatibile** con il
+dispositivo vero. Qui la correzione di ogni punto, verificata facendo
+scorrere quelle registrazioni reali nell'app.
+
+- **Il Recorder trasmette testo, non numeri binari.** Il ricevitore UDP
+  ufficiale di g.tec fa solo `Encoding.ASCII.GetString(...)`: ogni
+  datagramma è una riga CSV (`EXG 1..8, SATURATION, CNT, BAT, VALID, DT,
+  TRIG`, virgola come separatore, punto decimale). La 0.7.0 aveva esteso al
+  Recorder il formato binario a 17 float dell'Unicorn UDP Interface
+  (Hybrid Black): con il Recorder vero l'app avrebbe scartato quasi tutto.
+  Ora testo e binario si riconoscono da soli, anche più righe per pacchetto,
+  CRLF, padding, intestazioni, variante con punto e virgola.
+- **Offset elettrico (DC).** Il BCI Core è accoppiato in DC: ogni elettrodo
+  arriva con 20.000–77.000 µV di offset che deriva. Sul dato reale il
+  vecchio calcolo dava **100% delta e 0% a tutto il resto**: la musica
+  avrebbe seguito l'offset, non il cervello. Ora ogni finestra viene
+  privata di offset e deriva lineare prima dello spettro.
+- **Ronzio di rete a 50 Hz.** Con elettrodi a secco era il **100% della
+  banda gamma**. Ora i 50 Hz e le armoniche sono esclusi da tutte le bande
+  (configurabile: `MappingConfig.mains_hz`). Risultato sui dati reali:
+  a occhi chiusi l'alfa è il 52% della potenza posteriore, a occhi aperti
+  il 15% — l'effetto Berger, chiarissimo (rapporto 8:1).
+- **Buchi del Bluetooth.** Il dispositivo marca i campioni persi con
+  VALID = 0, e la 0.7.0 durante un'interruzione passava al motore degli
+  zeri: accanto a 50.000 µV di offset è un gradino enorme che fa scattare
+  tutte le voci insieme. Ora si tiene l'ultimo campione valido, sia dal
+  vivo sia rileggendo i file.
+- **EVENTI e CLIP tornano a suonare.** Le soglie fisse (80 e 60 µV²) erano
+  tarate sul simulatore: sul dato reale EVENTI scattava **0 volte al
+  minuto** (anzi, non era mai scattata nemmeno col simulatore) e CLIP 1,6.
+  Ora sono **adattive**: un evento parte quando la banda sale di N
+  "deviazioni tipiche" sopra la propria norma recente — lo stesso risultato
+  su simulatore, cuffie a secco o con gel, umano o cane. Tarate sui dati
+  reali: CLIP ~16/min (la densità che si sentiva già col simulatore),
+  EVENTI ~12/min. La soglia fissa in µV² resta disponibile togliendo la
+  spunta "adattiva". Le vecchie configurazioni passano da sole al modo
+  adattivo.
+- **Forma d'onda visibile con i dati reali.** Disegnava i valori grezzi:
+  con l'offset le tracce finivano fuori schermo. Ora il display toglie
+  offset e ronzio di rete (filtro causale, nessun salto all'avvio).
+- **File del Recorder letti correttamente.** I CSV e BDF del Recorder
+  venivano letti come 14 "canali" (anche contatore, batteria, trigger…) e
+  funzionavano solo perché l'EEG viene per primo. Ora si tengono solo gli
+  8 EXG e i campioni persi vengono ricuciti. Il lettore BDF è stato
+  verificato su un file reale: coincide col CSV entro 0,02 µV.
+- **Diagnostica `--live-test` più utile:** dice da quale programma g.tec
+  arrivano i dati, l'offset di ogni elettrodo, l'ampiezza EEG senza
+  ronzio (così si riconosce un elettrodo con cattivo contatto) e quanti
+  campioni si perdono.
+- **Guida `EEG_COLLEGAMENTO.txt` riscritta** sulla procedura reale:
+  attivazione della licenza nel launcher g.tec, download del Recorder,
+  impostazioni di rete, filtri consigliati, due cuffie.
+- Test: +30 (formato reale del Recorder, offset e rete, campioni persi,
+  soglie adattive e indipendenza dalla scala, file del Recorder, display)
+  — **203 totali**.
+
 ## 0.8.0 — interfaccia leggibile, in italiano, che dice la verità
 Nasce da un problema concreto: dopo aver installato la 0.7.0 non si capiva
 se fosse cambiato qualcosa. Non era un difetto dell'aggiornamento — era
@@ -35,7 +94,7 @@ l'interfaccia che non lo diceva.
   schede di mappatura e archivio.
 - Test: +10 sulle nuove garanzie UX (visibilità versione, avviso di
   aggiornamento a colpo singolo, coerenza del controllo segmentato, avviso
-  MIDI non bloccante) — **186 totali**.
+  MIDI non bloccante) — **173 totali**.
 
 ## 0.7.0 — EEG veri, in diretta
 Fino alla 0.6.0 l'app sapeva solo **simulare** un EEG o **rileggere un file**:
@@ -75,7 +134,7 @@ flusso di traduzione già collaudato, senza toccarlo.
   riproducibili con LOAD FILE (le 8 colonne EEG stanno in testa e finiscono
   correttamente nel motore); restano leggibili anche i BDF+.
 - Test: +16 dedicati (layout dei tre mittenti, dropout, backlog limitato,
-  datagrammi corrotti, rilevamento porta, pannello Qt, CLI) — **176 totali**.
+  datagrammi corrotti, rilevamento porta, pannello Qt, CLI) — **163 totali**.
 
 ## 0.6.0
 Risponde ai feedback del 29/08: "quando cambio setup o fermo/riavvio

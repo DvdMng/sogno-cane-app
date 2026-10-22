@@ -8,6 +8,7 @@ source, so the user can record the simulation *or* re-record a loaded file.
 from __future__ import annotations
 
 import os
+import time
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
@@ -54,6 +55,10 @@ from sogno_cane.ui.waveform_widget import WaveformWidget
 # Soft cap on a single recording so memory never runs away (minutes).
 _MAX_RECORD_SECONDS = 30 * 60
 
+# Waveform frame interval: 60 fps, or 30 when the PC cannot keep 60 up.
+_FRAME_MS = 16
+_FRAME_MS_SLOW = 33
+
 
 def _sender_name(layout: str) -> str:
     """Human name of the g.tec tool behind a detected channel layout."""
@@ -62,6 +67,44 @@ def _sender_name(layout: str) -> str:
         "unicorn-17": "Unicorn UDP Interface",
         "eeg-only": "solo EEG",
     }.get(layout, layout)
+
+
+def _restyle(label: QLabel, sheet: str) -> None:
+    """Set a label's style sheet only if it actually changes.
+
+    setStyleSheet() re-polishes the widget and re-lays-out the whole panel,
+    plot included, even for an identical sheet. Done on every health
+    refresh (twice a second per panel) it cost ~15% of the GUI thread.
+    """
+    if label.styleSheet() != sheet:
+        label.setStyleSheet(sheet)
+
+
+def _num(value: float, digits: int = 0) -> str:
+    return f"{value:.{digits}f}".replace(".", ",")
+
+
+def _cadence_tooltip(cad: dict) -> str:
+    """The live stream's measured cadence, in words (health line tooltip)."""
+    lines = ["Come arrivano i dati (misurato sugli ultimi secondi):"]
+    if cad["rate_hz"] is not None:
+        lines.append(f"• {_num(cad['rate_hz'], 1)} campioni al secondo")
+    if cad["bursts_per_s"] is not None:
+        lines.append(
+            f"• a blocchi di {_num(cad['samples_per_burst'])} campioni, "
+            f"{_num(cad['bursts_per_s'])} volte al secondo "
+            f"(pausa più lunga {_num(cad['max_pause_ms'])} ms)"
+        )
+    if cad["bt_burst_samples"] is not None:
+        lines.append(
+            f"• dalla cuffia al Recorder (colonna DT): pacchetti Bluetooth "
+            f"di {_num(cad['bt_burst_samples'])} campioni ogni "
+            f"{_num(cad['bt_interval_ms'])} ms"
+        )
+    lines.append(
+        f"• campioni persi prima di arrivare qui: {cad['lost_at_source']}"
+    )
+    return "\n".join(lines)
 
 
 class DevicePanel(QWidget):
@@ -248,10 +291,16 @@ class DevicePanel(QWidget):
         self._stats.setStyleSheet(f"color: {FG_DIM};")
         layout.addWidget(self._stats)
 
-        # Waveform repaint timer.
+        # Waveform repaint timer: ~60 fps, so the traces glide instead of
+        # stepping. Precise: a coarse Windows timer ticks every 15.6 ms or
+        # 31.2 ms, which reads as stutter. Frames with nothing new are free.
+        # A PC that cannot keep 60 up drops to 30 (see _on_frame).
         self._repaint_timer = QTimer(self)
-        self._repaint_timer.setInterval(33)   # ~30 fps
-        self._repaint_timer.timeout.connect(self._waveform.repaint_traces)
+        self._repaint_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._repaint_timer.setInterval(_FRAME_MS)
+        self._repaint_timer.timeout.connect(self._on_frame)
+        self._frame_prev: float | None = None
+        self._frame_gaps: list[float] = []
         self._repaint_timer.start()
 
         # Live stats timer.
@@ -368,16 +417,11 @@ class DevicePanel(QWidget):
         if was_running:
             self._stop_engine()
         self._profile = ALL_PROFILES[profile_name]
-        try:
-            self._repaint_timer.timeout.disconnect()
-        except Exception:
-            pass
         idx = self.layout().indexOf(self._waveform)
         self.layout().removeWidget(self._waveform)
         self._waveform.deleteLater()
         self._waveform = WaveformWidget(self._profile)
         self.layout().insertWidget(idx, self._waveform, 1)
-        self._repaint_timer.timeout.connect(self._waveform.repaint_traces)
         if was_running:
             self._start_engine()
 
@@ -550,7 +594,7 @@ class DevicePanel(QWidget):
         if live.sender is not None:
             who = f" · mittente :{live.sender[1]}"
         self._source_lbl.setText(f"LIVE UNICORN (UDP {live.port}{who})")
-        self._source_lbl.setStyleSheet(f"color: {FG_GOOD};")
+        _restyle(self._source_lbl, f"color: {FG_GOOD};")
 
     def detach_live_source(self) -> UnicornLiveSource | None:
         """Hand over this panel's live source (for SCAMBIA) without closing
@@ -785,10 +829,12 @@ class DevicePanel(QWidget):
             self._start_record()
 
     def _start_record(self) -> None:
-        src = (
-            f"file:{self._playback.source_name}"
-            if self._playback is not None else "simulator"
-        )
+        if self._live is not None:
+            src = f"live:UDP {self._live.port}"
+        elif self._playback is not None:
+            src = f"file:{self._playback.source_name}"
+        else:
+            src = "simulator"
         sr = (
             self._playback.sample_rate_hz
             if self._playback is not None
@@ -855,6 +901,7 @@ class DevicePanel(QWidget):
         parts: list[str] = []
         trouble = False
         idle = not self.is_streaming
+        tip = ""
 
         # --- signal in ---
         if self._live is not None:
@@ -863,10 +910,23 @@ class DevicePanel(QWidget):
             self._show_live_label()
             lst = self._live.stats
             if self._live.has_signal:
+                # The rate is measured on what arrives, so a sender running
+                # slow (or a lossy link) shows here instead of being assumed.
+                cad = self._live.cadence()
+                rate = cad["rate_hz"]
+                nominal = float(self._live.sample_rate_hz)
+                rate_txt = ""
+                if rate is not None:
+                    if abs(rate - nominal) <= 0.02 * nominal:
+                        rate_txt = f"{nominal:.0f} Hz, "
+                    else:
+                        rate_txt = f"{rate:.0f} Hz invece di {nominal:.0f}, "
+                        trouble = True
                 parts.append(
-                    f"EEG dal vivo {lst['samples']} campioni "
+                    f"EEG dal vivo {rate_txt}{lst['samples']} campioni "
                     f"({_sender_name(lst['layout'])}, {lst['encoding']})"
                 )
+                tip = _cadence_tooltip(cad)
             else:
                 parts.append("EEG dal vivo NESSUN DATO")
                 trouble = True
@@ -905,13 +965,14 @@ class DevicePanel(QWidget):
             trouble = True
 
         self._stats.setText("     ".join(parts))
+        self._stats.setToolTip(tip)
         if trouble:
             colour = FG_MAGENTA
         elif idle:
             colour = FG_DIM
         else:
             colour = FG_GOOD
-        self._stats.setStyleSheet(f"color: {colour};")
+        _restyle(self._stats, f"color: {colour};")
         self._surface_live_health()
         self._surface_midi_health()
 
@@ -968,9 +1029,32 @@ class DevicePanel(QWidget):
 
     def _set_status(self, text: str, color: str = FG_DIM) -> None:
         self._status.setText(text)
-        self._status.setStyleSheet(
-            f"color: {color}; font-size: 10pt; font-weight: 700;"
+        _restyle(
+            self._status,
+            f"color: {color}; font-size: 10pt; font-weight: 700;",
         )
+
+    def _on_frame(self) -> None:
+        """Draw one frame; fall back to 30 fps if 60 cannot be held.
+
+        The frame rate is what costs CPU (~1% of a core per frame per
+        second for the two panels). If this GUI thread cannot actually
+        deliver 60 (a slow PC, a high-DPI screen), trying anyway would only
+        starve the MIDI engine of the interpreter: settle for 30, which
+        still scrolls continuously, for the rest of the session.
+        """
+        now = time.perf_counter()
+        if self._frame_prev is not None \
+                and self._repaint_timer.interval() == _FRAME_MS:
+            gap = now - self._frame_prev
+            if gap < 0.25:                    # not a dialog or a window drag
+                self._frame_gaps.append(gap)
+            if len(self._frame_gaps) >= 120:
+                if sorted(self._frame_gaps)[60] > _FRAME_MS * 1.4 / 1000.0:
+                    self._repaint_timer.setInterval(_FRAME_MS_SLOW)
+                self._frame_gaps.clear()
+        self._frame_prev = now
+        self._waveform.repaint_traces()
 
     def push_packet_to_waveform(self, packet: UnicornPacket) -> None:
         self._waveform.push_packet(packet)

@@ -256,10 +256,14 @@ class MappingEngine:
         if self._buffered_samples < win:
             return events
 
-        # Time to evaluate?
-        if self._samples_since_last_window < self._config.hop_samples:
+        # Time to evaluate? Keep the remainder: a live headset delivers
+        # bursts of 4, and restarting the count from zero on the burst that
+        # crosses the hop would stretch every hop to 28 samples (112 ms) —
+        # the music would run 12% slow.
+        hop = self._config.hop_samples
+        if self._samples_since_last_window < hop:
             return events
-        self._samples_since_last_window = 0
+        self._samples_since_last_window %= hop
 
         eeg_window = self._tail(win)
         bands = compute_band_powers(

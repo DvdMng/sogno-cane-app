@@ -102,12 +102,12 @@ class FakeRecorder:
             )
             sock.sendto(chunk.encode("ascii"), dest)
             i += k
+            # 250 Hz on average (the schedule is never reset): Windows
+            # wakes threads every ~16 ms, so lines leave in small bursts.
             next_t += k / FS
             delay = next_t - time.monotonic()
             if delay > 0:
                 self._stop.wait(delay)
-            else:
-                next_t = time.monotonic()
         sock.close()
 
     def stop(self):

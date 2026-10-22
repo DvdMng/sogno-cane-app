@@ -274,6 +274,11 @@ class RealtimeEngine:
 
     def _run_loop(self) -> None:
         src = self._source
+        # A live headset is paced by its own clock: its source blocks until
+        # samples arrive. Re-timing it here on the PC clock would cut the
+        # stream into lumps and, since the two clocks never agree exactly,
+        # let a backlog (latency) build up.
+        self_clocked = bool(getattr(src, "self_clocked", False))
         next_t = time.monotonic()
         while not self._stop_event.is_set():
             packet = src.next_packet()
@@ -305,6 +310,8 @@ class RealtimeEngine:
                     pass
             for ev in self._mapper.process_packet(packet):
                 self._dispatch_event(ev)
+            if self_clocked:
+                continue
             period = self._packet_period()
             next_t += period
             sleep_for = next_t - time.monotonic()

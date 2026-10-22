@@ -40,6 +40,18 @@ disattivate) e **binario** a 17 float dell'Unicorn UDP Interface (Hybrid
 Black). Le registrazioni **CSV** e **BDF+** del Recorder si riproducono con
 **FILE**. Guida completa: `portable/EEG_COLLEGAMENTO.txt`.
 
+## Novità della versione 0.9.3
+
+* **L'EEG dal vivo scorre fluido e senza ritardo che cresce.** La cuffia
+  consegna i campioni via Bluetooth a pacchetti di 4 ogni ~16 ms; l'app li
+  ritagliava in blocchi da 100 ms sul proprio orologio (tracciato a scatti,
+  10 movimenti al secondo) e, poiché la cuffia va a ~250,65 Hz, accumulava
+  ritardo minuto dopo minuto. Ora i campioni passano appena arrivano, il
+  tracciato scorre a 60 fotogrammi al secondo e il ritardo resta fermo.
+* **Frequenza misurata alla fonte** nella riga di stato del pannello
+  ("EEG dal vivo 250 Hz", in rosa se il Recorder ne manda meno) e in
+  `--live-test`.
+
 ## Novità della versione 0.9.1
 
 * **Due cuffie, due segnali distinti.** Con due BCI Core Recorder attivi

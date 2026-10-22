@@ -1,5 +1,60 @@
 # Changelog
 
+## 0.9.3 — l'EEG dal vivo scorre fluido, senza ritardo che cresce
+Segnalazione dal campo: lo scorrimento dei dati in SOGNO_CANE era lento e a
+scatti.
+
+**Verifica alla fonte.** Sulle registrazioni ufficiali g.tec della BCI
+Core-8 (colonna DT del Recorder = millisecondi tra due campioni ricevuti):
+la cuffia campiona a 250 Hz senza perdere campioni e li consegna via
+Bluetooth **a pacchetti di 4 ogni ~16 ms** (~60 al secondo; il 5% arriva in
+ritardo, 8 insieme dopo ~32 ms). Nel Recorder non esiste un'impostazione
+della frequenza di uscita: la fonte va bene. Misurato anche che, rispetto
+all'orologio del PC, la cuffia va a ~250,65 Hz e non a 250 esatti.
+
+**Diagnosi** (emulatore fedele del Recorder — stessa cadenza, stesso
+formato — e la vera finestra dell'app, due cuffie, 60 s):
+- l'app ritagliava il flusso in blocchi di 25 campioni ogni 100 ms del
+  *proprio* orologio: il tracciato si muoveva 10 volte al secondo, a salti
+  di 100 ms di segnale (anche 200), con fermi fino a 120 ms;
+- disegnare le tracce costava ~43 ms a fotogramma per i due pannelli (linee
+  da 1,4 px con antialias, fuori dalla via veloce di Qt): ~16 ridisegni al
+  secondo e un core del processore quasi saturo (96%);
+- consumando 250 campioni/s esatti mentre la cuffia ne manda 250,65, il
+  ritardo tra cuffia e musica cresceva di ~0,1–0,15 s al minuto: dopo ~13
+  minuti 2 secondi, poi campioni scartati;
+- a ogni aggiornamento della riga di stato (2 volte al secondo) l'app
+  riapplicava lo stile alle etichette e Qt ricalcolava l'impaginazione di
+  tutto il pannello, grafico compreso.
+
+**Soluzione:**
+- la sorgente dal vivo consegna i campioni **appena arrivano** e il motore
+  segue l'orologio della cuffia: niente più ritagli né deriva. L'analisi
+  resta esattamente ogni 100 ms anche con pacchetti piccoli;
+- il tracciato **scorre in continuo** a 60 fotogrammi al secondo: un piccolo
+  margine (~36 ms) assorbe i pacchetti Bluetooth e i blocchi del
+  simulatore/file, misurando la velocità reale dei dati;
+- tracce da 1 px sulla via veloce di Qt (~5 ms a fotogramma invece di ~43),
+  buffer del grafico senza copie, stile delle etichette toccato solo quando
+  cambia. Se il PC non regge 60 fotogrammi, scende da solo a 30;
+- la riga di stato mostra la **frequenza misurata** dei dati in arrivo
+  ("EEG dal vivo 250 Hz"; in rosa se il Recorder ne manda meno) e, col
+  mouse sopra, come arrivano: blocchi, pause, pacchetti Bluetooth, campioni
+  persi alla fonte. `--live-test` stampa la stessa misura;
+- trovato durante i test e corretto: il garbage collector di Python poteva
+  girare nei thread di ricezione e del motore e distruggere lì oggetti Qt,
+  con possibile **blocco definitivo della finestra**. Ora gira solo nel
+  thread dell'interfaccia;
+- le registrazioni fatte dall'EEG dal vivo finivano in archivio come
+  "simulator": ora risultano "live:UDP 1001".
+
+**Risultato** (stesse condizioni, prima → dopo): movimenti del tracciato
+9,8 → 61,6 al secondo; passo 100 ms → 16 ms di segnale; fermo più lungo
+120 ms → un fotogramma; ritardo cuffia→analisi da 2 a 90 ms in un minuto →
+1 ms costante; CPU 96% → 79% di un core con quattro volte i fotogrammi.
+Verificato anche sul runtime Python 3.11 del pacchetto portatile. Test: +24,
+**242 totali**; quelli sul flusso falliscono sulla 0.9.2 e passano ora.
+
 ## 0.9.2 — la scelta della cuffia viene sempre rispettata
 Difetto della 0.9.1, trovato preparando la guida illustrata: con due
 Recorder, quando nel dialogo si sceglieva il segnale per il pannello UMANO,

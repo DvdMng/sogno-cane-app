@@ -108,11 +108,20 @@ SOGNO_CANE, poi
 Dice se arrivano dati, su quale porta, da quale programma, l'offset di
 ogni elettrodo, l'ampiezza del segnale EEG (senza ronzio di rete) e quanti
 campioni si perdono via Bluetooth. Un elettrodo con molto piu' ronzio
-degli altri di solito ha un contatto da sistemare.
+degli altri di solito ha un contatto da sistemare. Misura anche la
+frequenza e la cadenza con cui i dati arrivano davvero ("source cadence"):
+deve dire circa 250 campioni al secondo.
 
 
 COSE UTILI DA SAPERE
 --------------------
+
+- La riga in basso di ogni pannello mostra la frequenza MISURATA dei dati
+  in arrivo: "EEG dal vivo 250 Hz". Se il Recorder ne mandasse meno, lo
+  scrive in rosa ("... Hz invece di 250"). Col mouse sopra la riga si vede
+  come arrivano: a blocchi di 4 campioni circa 60 volte al secondo. E' il
+  Bluetooth della cuffia, ed e' normale: SOGNO_CANE li fa scorrere in
+  continuo e li analizza appena arrivano.
 
 - Se il Bluetooth perde qualche campione (VALID = 0) SOGNO_CANE tiene
   l'ultimo valore buono invece di "saltare": niente esplosioni di note.

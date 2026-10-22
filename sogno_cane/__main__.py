@@ -180,6 +180,27 @@ def _live_test(argv: list[str]) -> int:
                 print("of which EEG without 50 Hz hum, rms (uV): "
                       + ", ".join(f"{v:.1f}" for v in clean.std(axis=0)))
             print(f"samples lost or not yet received: {lost * 100:.0f}%")
+            # How the stream really arrives: the source side, measured.
+            cad = src.cadence(window_seconds=5.0)
+            if cad["rate_hz"] is not None:
+                print(f"source cadence: {cad['rate_hz']:.1f} samples/s "
+                      f"(nominal {src.sample_rate_hz})")
+                if abs(cad["rate_hz"] - src.sample_rate_hz) > \
+                        0.02 * src.sample_rate_hz:
+                    print("  WARNING: the sender is not delivering "
+                          f"{src.sample_rate_hz} samples per second")
+                    ok = False
+            if cad["bursts_per_s"] is not None:
+                print(f"  arriving {cad['bursts_per_s']:.1f} times/s in "
+                      f"bursts of {cad['samples_per_burst']:.0f} samples "
+                      f"({cad['datagrams_per_s']:.0f} datagrams/s), "
+                      f"longest pause {cad['max_pause_ms']:.0f} ms")
+            if cad["bt_burst_samples"] is not None:
+                print(f"  headset -> Recorder (DT column): Bluetooth packets "
+                      f"of {cad['bt_burst_samples']:.0f} samples every "
+                      f"{cad['bt_interval_ms']:.0f} ms")
+            print(f"  samples lost before reaching this PC (counter gaps): "
+                  f"{cad['lost_at_source']}")
         if ok:
             print("\nlive acquisition OK")
             return 0
@@ -234,12 +255,15 @@ def main(argv: list[str] | None = None) -> int:
 
     from PySide6.QtWidgets import QApplication
 
+    from sogno_cane.ui.gui_gc import GuiThreadGarbageCollector
     from sogno_cane.ui.main_window import MainWindow
     from sogno_cane.ui.theme import apply_theme
 
     app = QApplication(argv)
     app.setApplicationName("SOGNO_CANE")
     app.setOrganizationName("SOGNO_CANE")
+    # Before any background thread exists: see sogno_cane.ui.gui_gc.
+    collector = GuiThreadGarbageCollector(app)  # noqa: F841 (kept alive)
     _install_excepthook(app)
     apply_theme(app)
 

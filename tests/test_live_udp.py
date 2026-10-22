@@ -87,12 +87,13 @@ class _FakeUnicorn:
             )
             self.sent += 1
             i += 1
+            # Keep the device's pace on average (never reset the schedule):
+            # Windows wakes threads every ~16 ms, so samples go out in small
+            # bursts — just like the real headset over Bluetooth.
             next_t += period
             delay = next_t - time.monotonic()
             if delay > 0:
                 self._stop.wait(delay)
-            else:
-                next_t = time.monotonic()
         sock.close()
 
     def stop(self):
@@ -163,18 +164,24 @@ def test_receives_and_decodes_each_sender_layout(n_channels, expected):
     sender = _FakeUnicorn(port, n_channels=n_channels).start()
     try:
         deadline = time.monotonic() + 5.0
-        pkt = None
-        while time.monotonic() < deadline:
+        got = []
+        while (time.monotonic() < deadline
+               and sum(p.samples.shape[0] for p in got) < 60):
             candidate = src.next_packet()
-            if candidate is not None and np.any(candidate.eeg):
-                pkt = candidate
-                break
-        assert pkt is not None, "no live packet decoded"
-        assert pkt.samples.shape == (25, PACKET_VALUES)
-        assert pkt.samples.dtype == np.float32
-        assert pkt.sample_rate == 250
+            if (candidate is not None and np.any(candidate.eeg)
+                    and np.all(candidate.validation > 0.5)):
+                got.append(candidate)
+        assert got, "no live packet decoded"
+        for pkt in got:
+            # Handed over as delivered (any number of rows), canonical cols.
+            assert pkt.samples.shape[0] >= 1
+            assert pkt.samples.shape[1] == PACKET_VALUES
+            assert pkt.samples.dtype == np.float32
+            assert pkt.sample_rate == 250
+        eeg = np.concatenate([p.eeg for p in got])
+        assert eeg.shape[0] >= 60
         # The 10 Hz alpha survived the wire at the right amplitude.
-        assert 10.0 < float(pkt.eeg[:, 0].std()) < 30.0
+        assert 10.0 < float(eeg[:, 0].std()) < 30.0
         st = src.stats
         assert st["layout"] == expected
         assert st["channels"] == n_channels
@@ -200,10 +207,13 @@ def test_dropout_yields_silence_not_engine_stop():
         assert src.has_signal
         sender.stop()          # device goes away mid-performance
         time.sleep(0.3)
+        src.next_packet()      # what arrived before it went away
         for _ in range(5):
             pkt = src.next_packet()
             assert pkt is not None, "dropout must not end the stream"
+            # Held at the nominal pace, honestly flagged as not real.
             assert pkt.samples.shape == (25, PACKET_VALUES)
+            assert np.all(pkt.validation == 0.0)
         assert not src.has_signal      # honestly reported as dead
     finally:
         sender.stop()

@@ -51,15 +51,35 @@ mirroring the first. Now:
 * If a claimed sender falls silent and a new unclaimed one appears on the
   port (a Recorder restarted its network output), the panel adopts it.
 
+The headset's clock paces the engine, not the PC's
+--------------------------------------------------
+g.tec's own raw recordings (the Recorder's DT column: milliseconds between
+two received samples) show how the samples really travel: 250 Hz sampled,
+but delivered over Bluetooth in bursts of 4 every ~16 ms (~5% late, merged
+into 8), and against the PC clock the device runs at ~250.65 Hz, not 250.
+
+Up to 0.9.2 the engine re-cut this stream into 25 samples every 100 ms of
+the PC clock. Two visible faults followed: the traces moved ten times a
+second in 100 ms jumps, and since the headset delivers ~0.65 samples a
+second more than were consumed, a backlog — i.e. latency — grew by ~0.15 s
+a minute until the bounded buffer overflowed. Now
+:meth:`UnicornLiveSource.next_packet` hands over everything that has
+arrived the moment it arrives (``self_clocked``): the engine waits on the
+device instead of a timer, so there is no drift and no extra latency. The
+display smooths the bursts on its own side.
+
 Design notes
 ------------
 * A bounded buffer per consumer: a slow or stalled consumer can never grow
   latency without bound; the oldest samples are dropped (and counted).
 * :meth:`UnicornLiveSource.next_packet` never returns ``None`` while the
-  source is open. A gap on the wire yields a packet that *holds the last
-  sample* and is flagged invalid — not zeros: on DC-coupled hardware a jump
-  from tens of thousands of microvolts to zero is a giant step that would
-  fire every voice at once.
+  source is open. Silence on the wire for :data:`GAP_SECONDS` yields
+  packets that *hold the last sample* and are flagged invalid — not zeros:
+  on DC-coupled hardware a jump from tens of thousands of microvolts to zero
+  is a giant step that would fire every voice at once.
+* :meth:`UnicornLiveSource.cadence` measures how the stream actually
+  arrives (rate, bursts, pauses, samples lost at the source), so the source
+  side can be checked on site instead of assumed.
 """
 from __future__ import annotations
 
@@ -105,6 +125,15 @@ _TEXT_OK = frozenset(range(0x20, 0x7F)) | {0x09, 0x0A, 0x0D}
 # A claimed sender silent for this long may be replaced by a new unclaimed
 # sender on the same port (the Recorder restarted its network output).
 ADOPT_AFTER_SECONDS = 1.5
+
+# Silence on the wire longer than this is a dropout, not a late burst (the
+# longest Bluetooth pause in g.tec's recordings is ~66 ms): from then on the
+# engine is fed held samples, flagged invalid, until the data comes back.
+GAP_SECONDS = 0.25
+
+# Datagrams this close together arrived as one burst (one sample per
+# datagram is sent back to back).
+_SAME_BURST_SECONDS = 0.002
 
 Sender = tuple  # (ip, port) of the datagram's source
 
@@ -522,7 +551,9 @@ class UnicornLiveSource:
     sample_rate_hz
         Nominal device rate; the Unicorn family streams at 250 Hz.
     packet_samples
-        Samples handed to the engine per call (25 = the usual 100 ms hop).
+        Size of the held packets that stand in for the signal during a
+        dropout (25 = 100 ms). Real samples are handed over as they arrive,
+        however many came in.
     buffer_seconds
         Bound on the receive backlog. Older samples are dropped rather than
         queued, so latency stays flat if the consumer stalls.
@@ -532,6 +563,10 @@ class UnicornLiveSource:
     label
         Who is listening (the panel name), shown to other panels.
     """
+
+    # The engine must not pace this source with its own timer: the source
+    # blocks until the device delivers, so the device's clock rules.
+    self_clocked = True
 
     def __init__(
         self,
@@ -579,6 +614,16 @@ class UnicornLiveSource:
         self._counter = 0
         # Last row handed to the engine: held across gaps on the wire.
         self._last_row: Optional[np.ndarray] = None
+        self._in_gap = False
+
+        # Cadence, as measured: (arrival time, samples) per datagram, the
+        # Recorder's DT column (ms between samples it received from the
+        # headset) and gaps in the sample counter (samples lost upstream).
+        self._arrivals: deque = deque(maxlen=4096)
+        self._dt_recent: deque = deque(maxlen=1500)
+        self._frame_dt: Optional[np.ndarray] = None
+        self._last_cnt: Optional[float] = None
+        self._lost_at_source = 0
 
     # ------------------------------------------------------------------ #
     # Lifecycle                                                          #
@@ -609,6 +654,7 @@ class UnicornLiveSource:
         with self._lock:
             self._buf.clear()
         self._counter = 0
+        self._in_gap = False
 
     # ------------------------------------------------------------------ #
     # Telemetry                                                          #
@@ -651,7 +697,57 @@ class UnicornLiveSource:
             "encoding": self._encoding or "",
             "seconds_since_data": self.seconds_since_data,
             "last_error": self._last_error,
+            "lost_at_source": self._lost_at_source,
         }
+
+    def cadence(self, window_seconds: float = 5.0) -> dict:
+        """How the samples are really arriving over the last few seconds.
+
+        ``rate_hz``            samples per second actually received
+        ``bursts_per_s``       how often data lands (datagrams sent back to
+                               back count as one burst)
+        ``samples_per_burst``  typical burst size
+        ``max_pause_ms``       longest silence between two bursts
+        ``datagrams_per_s``    UDP datagrams per second
+        ``bt_burst_samples``   from the Recorder's DT column: how many
+        ``bt_interval_ms``     samples the headset delivers per Bluetooth
+                               packet, and how often
+        ``lost_at_source``     gaps in the sample counter since connection
+
+        Values that cannot be measured yet are ``None``.
+        """
+        now = time.perf_counter()
+        with self._lock:
+            arrivals = [(t, n) for t, n in self._arrivals
+                        if now - t <= window_seconds]
+            dts = np.asarray(self._dt_recent, dtype=np.float64)
+        out = {
+            "rate_hz": None, "bursts_per_s": None, "samples_per_burst": None,
+            "max_pause_ms": None, "datagrams_per_s": None,
+            "bt_burst_samples": None, "bt_interval_ms": None,
+            "lost_at_source": self._lost_at_source,
+        }
+        if len(arrivals) >= 2:
+            t = np.asarray([a[0] for a in arrivals])
+            n = np.asarray([a[1] for a in arrivals])
+            span = t[-1] - t[0]
+            if span >= 0.5:
+                out["rate_hz"] = float(n[1:].sum() / span)
+                out["datagrams_per_s"] = (len(t) - 1) / span
+                starts = np.flatnonzero(np.concatenate(
+                    [[True], np.diff(t) > _SAME_BURST_SECONDS]))
+                sizes = np.add.reduceat(n, starts)
+                bt = t[starts]
+                out["samples_per_burst"] = float(np.median(sizes))
+                if len(bt) >= 2 and bt[-1] > bt[0]:
+                    out["bursts_per_s"] = (len(bt) - 1) / (bt[-1] - bt[0])
+                    out["max_pause_ms"] = float(np.diff(bt).max() * 1000.0)
+        if dts.size >= 20:
+            starts = np.flatnonzero(dts >= 1.0)
+            if len(starts) >= 3:
+                out["bt_burst_samples"] = float(np.median(np.diff(starts)))
+                out["bt_interval_ms"] = float(np.median(dts[starts]))
+        return out
 
     # ------------------------------------------------------------------ #
     # Called by the hub (its thread)                                     #
@@ -699,8 +795,10 @@ class UnicornLiveSource:
         self._accept(rows)
 
     def _accept(self, rows: np.ndarray) -> None:
+        now = time.monotonic()
         self._datagrams += 1
-        self._last_rx_monotonic = time.monotonic()
+        self._last_rx_monotonic = now
+        dt, self._frame_dt = self._frame_dt, None
         with self._lock:
             free = self._buf.maxlen - len(self._buf)
             overflow = max(0, rows.shape[0] - free)
@@ -710,7 +808,26 @@ class UnicornLiveSource:
                 self._buf.append(row)
                 self._recent.append(row)
             self._samples += rows.shape[0]
+            # perf_counter, not monotonic: on Windows (Python 3.12) the
+            # latter ticks every 15.6 ms — too coarse to see 16 ms bursts.
+            self._arrivals.append((time.perf_counter(), rows.shape[0]))
+            if dt is not None:
+                self._dt_recent.extend(dt.tolist())
+            self._count_lost_at_source(rows)
         self._data_ready.set()
+
+    def _count_lost_at_source(self, rows: np.ndarray) -> None:
+        """Count holes in the sample counter (lost before reaching us)."""
+        if self._layout not in (LAYOUT_UNICORN_17, LAYOUT_RECORDER_14):
+            return
+        cnt = rows[:, COUNTER_INDEX].astype(np.float64)
+        if self._last_cnt is not None:
+            cnt = np.concatenate([[self._last_cnt], cnt])
+        steps = np.diff(cnt)
+        jumps = steps[steps > 1.0]
+        # A step backwards is a sender that restarted, not a loss.
+        self._lost_at_source += int(round(float((jumps - 1.0).sum())))
+        self._last_cnt = float(cnt[-1])
 
     def recent_rows(self) -> list:
         """Copies of the latest received rows (canonical 17 columns)."""
@@ -723,6 +840,7 @@ class UnicornLiveSource:
         Returns ``None`` for an undecodable datagram and an empty array for
         one that only carried a header line.
         """
+        self._frame_dt = None
         decoded = decode_datagram(data, self._layout_channels)
         if decoded is None:
             return None
@@ -735,6 +853,10 @@ class UnicornLiveSource:
             self._layout_channels = n_ch
             self._layout = describe_layout(n_ch)
             self._encoding = encoding
+        if self._layout == LAYOUT_RECORDER_14:
+            # The Recorder's own timing of the Bluetooth link, picked up by
+            # _accept for cadence(): it is not part of the canonical packet.
+            self._frame_dt = frame[:, _REC_DT].astype(np.float64)
         return frame_to_packet_rows(frame)
 
     # ------------------------------------------------------------------ #
@@ -742,46 +864,56 @@ class UnicornLiveSource:
     # ------------------------------------------------------------------ #
 
     def next_packet(self) -> Optional[UnicornPacket]:
-        """Return the next chunk, waiting briefly for the device to speak.
+        """Everything that has arrived, as soon as at least one sample has.
 
-        Returns ``None`` only once the source is closed. While it is open a
-        gap on the wire produces a packet that holds the last sample and is
-        flagged invalid, rather than stopping the engine, so playback
-        survives a dropout and resumes on its own.
+        The packet is as big as what the device delivered (typically one
+        Bluetooth burst of 4 samples): it is never padded or cut to a fixed
+        size on the PC's clock — that is what made the traces jump and the
+        latency creep up (see the module notes).
+
+        Returns ``None`` only once the source is closed. While it is open,
+        silence on the wire for :data:`GAP_SECONDS` produces packets that
+        hold the last sample, flagged invalid, one every ``packet_samples``
+        worth of time, rather than stopping the engine: playback survives a
+        dropout and resumes on its own.
         """
         if self._closed and self._hub is None:
             return None
-        want = self.packet_samples
-        deadline = time.monotonic() + (want / float(self.sample_rate_hz)) * 2.0
+        hold = self.packet_samples
+        patience = (hold / float(self.sample_rate_hz) if self._in_gap
+                    else GAP_SECONDS)
+        deadline = time.monotonic() + patience
         while True:
+            # Clear BEFORE looking, so a datagram landing in between still
+            # wakes the wait below instead of being slept through.
+            self._data_ready.clear()
             with self._lock:
                 have = len(self._buf)
-            if have >= want or self._closed:
+            if have or self._closed:
                 break
-            if time.monotonic() >= deadline:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 break
-            self._data_ready.clear()
-            self._data_ready.wait(timeout=0.01)
+            self._data_ready.wait(timeout=remaining)
 
         with self._lock:
-            take = min(want, len(self._buf))
-            rows = [self._buf.popleft() for _ in range(take)]
+            rows = list(self._buf)
+            self._buf.clear()
 
         if rows:
+            self._in_gap = False
             samples = np.asarray(rows, dtype=np.float32)
             self._last_row = samples[-1].copy()
-            if samples.shape[0] < want:
-                samples = np.vstack([samples, self._hold_rows(
-                    want - samples.shape[0]
-                )])
         else:
-            samples = self._hold_rows(want)
+            self._in_gap = True
+            samples = self._hold_rows(hold)
+        n = samples.shape[0]
 
         # Keep a monotonic counter even when the sender omits one.
         if describe_layout(self._layout_channels or 0) == LAYOUT_EEG_ONLY:
-            counter_vals = (self._counter + np.arange(want)) % (1 << 32)
+            counter_vals = (self._counter + np.arange(n)) % (1 << 32)
             samples[:, COUNTER_INDEX] = counter_vals.astype(np.float32)
-        self._counter = int((self._counter + want) % (1 << 32))
+        self._counter = int((self._counter + n) % (1 << 32))
 
         return UnicornPacket(
             samples=samples,

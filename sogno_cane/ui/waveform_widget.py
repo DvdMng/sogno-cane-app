@@ -2,9 +2,16 @@
 
 Uses a calm two-color alternation (pink / cyan) across the 8 EEG channels
 with thin anti-aliased traces.
+
+The traces scroll continuously, whatever the lumps the samples arrive in
+(see :class:`_Playout`), and are drawn with 1 px pens: Qt draws those on
+its fast path, ~100x cheaper than the 1.4 px antialiased lines used up to
+0.9.2, which cost ~40 ms a frame for the two panels and capped the display
+at ~16 frames a second.
 """
 from __future__ import annotations
 
+import time
 from collections import deque
 
 import numpy as np
@@ -66,6 +73,105 @@ class _DisplayCleaner:
         return out
 
 
+class _Playout:
+    """Reveal samples at the pace they are produced, not in the lumps they
+    arrive in.
+
+    Every source hands samples over in lumps: the simulator and file
+    playback 25 at a time ten times a second, a real headset 4 at a time
+    ~60 times a second (its Bluetooth packets), with the odd late lump of
+    8-16. Drawing each lump the moment it lands makes the trace jump.
+    Instead the display runs about one lump behind and reveals the backlog
+    at the measured input rate, sped up or slowed by a few percent to keep
+    that backlog steady — a jitter buffer, for the eye. Measuring the rate
+    (instead of assuming 250 Hz) follows a headset whose clock runs a little
+    fast and slowed-down file playback alike.
+    """
+
+    _RATE_WINDOW_S = 3.0       # arrivals used to measure rate and lump size
+    _LAG_SMOOTH_S = 0.5        # backlog smoothing, so lumps don't wobble it
+    _CATCH_UP_S = 1.0          # correct a backlog error over about 1 s
+    _JUMP_AFTER_S = 1.0        # this far behind (a stalled UI): jump ahead
+
+    def __init__(self, fs: float) -> None:
+        self._nominal = float(fs)
+        self._chunks: deque[np.ndarray] = deque()
+        self.pending = 0
+        self._arrivals: deque[tuple[float, int]] = deque()
+        self._acc = 0.0
+        self._last_t: float | None = None
+        self._lag = 0.0
+
+    def push(self, rows: np.ndarray, now: float) -> None:
+        if rows.shape[0] == 0:
+            return
+        self._chunks.append(rows)
+        self.pending += rows.shape[0]
+        self._arrivals.append((now, rows.shape[0]))
+        while now - self._arrivals[0][0] > self._RATE_WINDOW_S:
+            self._arrivals.popleft()
+
+    def input_rate(self) -> float:
+        """Samples per second actually coming in (nominal until measured)."""
+        if len(self._arrivals) >= 3:
+            span = self._arrivals[-1][0] - self._arrivals[0][0]
+            if span >= 0.5:
+                n = sum(k for _t, k in self._arrivals) - self._arrivals[0][1]
+                return max(1.0, n / span)
+        return self._nominal
+
+    def target(self, rate: float) -> float:
+        """Backlog (samples) that rides out the pause before the next lump."""
+        lump = max((k for _t, k in self._arrivals), default=0)
+        return max(4.0, 0.7 * lump + 0.03 * rate)
+
+    def take(self, now: float) -> np.ndarray | None:
+        """The rows to reveal on this frame (``None``: nothing new)."""
+        if self._last_t is None:
+            self._last_t = now
+        dt = min(max(0.0, now - self._last_t), 0.25)
+        self._last_t = now
+        if self.pending == 0:
+            self._acc = 0.0
+            return None
+        rate = self.input_rate()
+        target = self.target(rate)
+        smooth = min(1.0, dt / self._LAG_SMOOTH_S)
+        self._lag += smooth * (self.pending - self._lag)
+        if self.pending > target + rate * self._JUMP_AFTER_S:
+            n = int(self.pending - target)
+            self._acc = 0.0
+            self._lag = target
+        else:
+            excess_s = (self._lag - target) / rate
+            speed = min(1.25, max(0.85, 1.0 + excess_s / self._CATCH_UP_S))
+            self._acc += rate * speed * dt
+            n = int(self._acc)
+            if n >= self.pending:
+                n = self.pending
+                self._acc = 0.0          # ran dry: owe nothing
+            else:
+                self._acc -= n
+        if n <= 0:
+            return None
+        return self._pop(n)
+
+    def _pop(self, n: int) -> np.ndarray:
+        out = []
+        need = n
+        while need > 0:
+            head = self._chunks[0]
+            if head.shape[0] <= need:
+                out.append(self._chunks.popleft())
+                need -= head.shape[0]
+            else:
+                out.append(head[:need])
+                self._chunks[0] = head[need:]
+                need = 0
+        self.pending -= n
+        return out[0] if len(out) == 1 else np.concatenate(out)
+
+
 def _palette(n: int) -> list[str]:
     # Alternate pink / cyan with subtle brightness variations.
     out: list[str] = []
@@ -113,7 +219,8 @@ class WaveformWidget(QWidget):
         palette = _palette(len(profile.channel_names))
         self._curves: list[pg.PlotDataItem] = []
         for i, ch_name in enumerate(profile.channel_names):
-            pen = pg.mkPen(palette[i], width=1.4)
+            # 1 px: Qt's fast path (see the module notes).
+            pen = pg.mkPen(palette[i], width=1.0)
             curve = self._plot.plot([], [], pen=pen)
             self._curves.append(curve)
             label = pg.TextItem(
@@ -122,24 +229,54 @@ class WaveformWidget(QWidget):
             label.setPos(2, i * self._stride_uv)
             self._plot.addItem(label)
 
-        self._buffers: list[deque[float]] = [
-            deque([0.0] * self._n_visible, maxlen=self._n_visible)
-            for _ in profile.channel_names
-        ]
+        # The last n_visible samples, stored twice over so that the visible
+        # window is always one contiguous slice: nothing is rebuilt per
+        # frame (turning 16 deques into arrays 60 times a second cost ~6%
+        # of a core on its own).
+        n_ch = len(profile.channel_names)
+        self._ring = np.zeros((2 * self._n_visible, n_ch), dtype=np.float32)
+        self._head = 0                   # oldest sample = next write slot
+        self._offsets = np.arange(n_ch, dtype=np.float32) * self._stride_uv
         self._x_axis = np.arange(self._n_visible)
         self._cleaner = _DisplayCleaner(len(profile.channel_names), self._fs)
+        self._playout = _Playout(self._fs)
+        self._shown_total = 0        # samples revealed so far (diagnostics)
 
         self.setMinimumHeight(160)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._plot)
 
+    # The playout clock is perf_counter: time.monotonic() on Windows
+    # (Python 3.12) ticks every 15.6 ms, so at 60 fps some frames would see
+    # no time pass at all and the trace would stall on them.
+
     def push_packet(self, packet: UnicornPacket) -> None:
         eeg = self._cleaner.process(packet.eeg)
-        for ch, buf in enumerate(self._buffers):
-            buf.extend(eeg[:, ch].tolist())
+        self._playout.push(eeg, time.perf_counter())
 
     def repaint_traces(self) -> None:
-        for ch, buf in enumerate(self._buffers):
-            data = np.asarray(buf, dtype=np.float32) + ch * self._stride_uv
-            self._curves[ch].setData(self._x_axis, data)
+        """Advance the traces by what this frame should reveal."""
+        rows = self._playout.take(time.perf_counter())
+        if rows is None:
+            return                   # nothing new: leave the picture alone
+        self._shown_total += rows.shape[0]
+        self._append(rows)
+        n = self._n_visible
+        window = self._ring[self._head:self._head + n]   # oldest -> newest
+        for ch, curve in enumerate(self._curves):
+            # The cleaner never outputs NaN/inf: skip pyqtgraph's check.
+            curve.setData(self._x_axis, window[:, ch] + self._offsets[ch],
+                          skipFiniteCheck=True)
+
+    def _append(self, rows: np.ndarray) -> None:
+        n = self._n_visible
+        rows = rows[-n:]
+        k = rows.shape[0]
+        i = self._head
+        first = min(k, n - i)
+        for base in (0, n):                      # both copies
+            self._ring[base + i:base + i + first] = rows[:first]
+            if k > first:
+                self._ring[base:base + k - first] = rows[first:]
+        self._head = (i + k) % n

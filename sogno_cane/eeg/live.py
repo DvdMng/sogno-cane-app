@@ -658,13 +658,22 @@ class UnicornLiveSource:
     # ------------------------------------------------------------------ #
 
     def _wants_sender(self, now: float) -> bool:
-        """Free to take a new sender: none yet, or ours went quiet."""
+        """Free to take a new sender: none yet, or ours went quiet.
+
+        A sender we hold but have not heard from yet is *not* "quiet": it
+        was chosen (by the user, or by discovery) and is simply about to
+        speak. Treating it as replaceable let whichever headset happened to
+        send first at start-up override the user's choice — the panels came
+        out swapped about half the time (0.9.1).
+        """
         if self._closed:
             return False
         if self._sender is None:
             return True
         last = self._last_rx_monotonic
-        return last is None or now - last >= ADOPT_AFTER_SECONDS
+        if last is None:
+            return False
+        return now - last >= ADOPT_AFTER_SECONDS
 
     def _try_adopt(self, data: bytes, sender: Sender) -> bool:
         """Claim ``sender`` if its datagram is real Unicorn data."""

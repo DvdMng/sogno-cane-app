@@ -858,6 +858,9 @@ class DevicePanel(QWidget):
 
         # --- signal in ---
         if self._live is not None:
+            # The sender can legitimately change (a Recorder restarting its
+            # network output): keep the label telling the truth.
+            self._show_live_label()
             lst = self._live.stats
             if self._live.has_signal:
                 parts.append(

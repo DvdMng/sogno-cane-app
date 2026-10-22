@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.9.2 — la scelta della cuffia viene sempre rispettata
+Difetto della 0.9.1, trovato preparando la guida illustrata: con due
+Recorder, quando nel dialogo si sceglieva il segnale per il pannello UMANO,
+il pannello poteva prendersi invece l'**altra** cuffia — quella che per
+caso aveva trasmesso per prima all'apertura. La regola "se il tuo Recorder
+tace, prendi quello libero" scattava anche quando il Recorder scelto
+semplicemente non aveva ancora parlato. Effetto: in circa metà dei casi i
+pannelli uscivano invertiti rispetto alla scelta, e l'etichetta continuava a
+mostrare il mittente scelto all'inizio. Nessuno specchio né mescolanza (ogni
+pannello riceveva comunque un segnale puro), ma la scelta "per batteria" non
+era affidabile.
+
+- Un segnale scelto non viene più scavalcato: il pannello aspetta il suo
+  Recorder. Il cambio automatico resta solo per un Recorder che, dopo aver
+  trasmesso, tace a lungo e riparte da un nuovo indirizzo.
+- L'etichetta della sorgente si aggiorna continuamente e mostra sempre il
+  mittente realmente collegato.
+- Verificato 6 volte su 6 con due Recorder simulati; nuovo test che fallisce
+  sulla 0.9.1 e passa ora. Test: +2, **218 totali**.
+
 ## 0.9.1 — due cuffie, due segnali distinti
 Segnalazione dal campo: con due sessioni del BCI Core Recorder attive (uomo
 e cane), SOGNO_CANE leggeva un solo EEG e lo mostrava uguale su entrambi i

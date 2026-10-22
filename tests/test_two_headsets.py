@@ -426,3 +426,66 @@ def test_scambia_swaps_the_two_headsets(qt_panels, monkeypatch):
     finally:
         a.stop()
         b.stop()
+
+
+# --------------------------------------------------------------------------- #
+# The user's choice is final (regression found while illustrating 0.9.1)      #
+# --------------------------------------------------------------------------- #
+
+def test_explicit_choice_survives_the_other_headset_speaking_first():
+    """0.9.1 bug: a source holding a chosen sender that had not spoken yet
+    counted as 'silent' and adopted whichever headset sent first — the
+    panels came out swapped about half the time. Here A floods the port
+    before the chosen sender B says anything."""
+    port = _free_port()
+    a = FakeRecorder(port, A_OFFSET).start()          # speaks first, always
+    b_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    b_sock.bind(("127.0.0.1", 0))
+    b_sender = ("127.0.0.1", b_sock.getsockname()[1])
+    src = UnicornLiveSource(port=port, host="127.0.0.1", sender=b_sender,
+                            label="CANE")
+    try:
+        src.open()
+        time.sleep(0.6)                               # only A is talking
+        assert src.sender == b_sender, "the user's choice was overridden"
+        assert src.stats["samples"] == 0, "A's data leaked into B's panel"
+        for i in range(300):                          # now B speaks
+            vals = [B_OFFSET] * 8 + [0, i + 1, 64, 1, 0.007, 0]
+            b_sock.sendto((",".join(f"{v:.3f}" for v in vals) + "\n")
+                          .encode(), ("127.0.0.1", port))
+            time.sleep(0.002)
+        time.sleep(0.3)
+        assert src.sender == b_sender
+        assert _whose(src, seconds=0.1) in (None, "B")
+        rows = src.recent_rows()
+        assert rows and all(abs(r[0] - B_OFFSET) < 1 for r in rows)
+        # A is still free for the other panel.
+        found = discover_streams(ports=(port,), timeout=0.5,
+                                 host="127.0.0.1")
+        a_streams = [f for f in found if f.sender[1] == a.sender_port]
+        assert a_streams and a_streams[0].claimed_by is None
+    finally:
+        src.close()
+        b_sock.close()
+        a.stop()
+
+
+def test_panel_label_shows_the_sender_it_really_holds(qt_panels,
+                                                      monkeypatch):
+    h, d, asked, told = qt_panels
+    port = _free_port()
+    _scan_only(port, monkeypatch)
+    a = FakeRecorder(port, A_OFFSET).start()
+    b = FakeRecorder(port, B_OFFSET).start()
+    try:
+        h._connect_live()
+        d._connect_live()
+        time.sleep(0.5)
+        for panel in (h, d):
+            panel._update_stats()
+            src = panel.live_source
+            assert f":{src.sender[1]}" in panel._source_lbl.text()
+        assert h.live_source.sender != d.live_source.sender
+    finally:
+        a.stop()
+        b.stop()

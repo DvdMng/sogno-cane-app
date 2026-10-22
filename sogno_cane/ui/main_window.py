@@ -219,6 +219,13 @@ class MainWindow(QMainWindow):
         panic.setToolTip("Manda All-Notes-Off su tutti i canali MIDI.")
         panic.clicked.connect(self._panic)
         bar.addWidget(panic)
+        swap = QPushButton("SCAMBIA EEG")
+        swap.setToolTip(
+            "Se il segnale dell'uomo è finito sul pannello CANE (e viceversa)\n"
+            "scambia i due EEG dal vivo tra i pannelli, senza ricollegare."
+        )
+        swap.clicked.connect(self._swap_live_eeg)
+        bar.addWidget(swap)
         bar.addStretch(1)
         self._version_lbl = QLabel(f"v{__version__}")
         self._version_lbl.setObjectName("VersionTag")
@@ -251,6 +258,28 @@ class MainWindow(QMainWindow):
             if d.is_streaming:
                 d._toggle_stream()
 
+    def _swap_live_eeg(self) -> None:
+        """Exchange the two panels' live headsets.
+
+        With two Recorders the app can tell the streams apart but not which
+        one is the dog: that only the user knows (tap an electrode, watch
+        which panel jumps). Swapping keeps both streams' claims intact.
+        """
+        h, d = self._human, self._dog
+        if h.live_source is None or d.live_source is None:
+            QMessageBox.information(
+                self, "Scambia EEG",
+                "Per scambiare servono due EEG dal vivo, uno per pannello.",
+            )
+            return
+        h_live = h.detach_live_source()
+        d_live = d.detach_live_source()
+        h.adopt_live_source(d_live)
+        d.adopt_live_source(h_live)
+        self.statusBar().showMessage(
+            "EEG scambiati tra UMANO e CANE", 4000,
+        )
+
     def _panic(self) -> None:
         self._human.panic()
         self._dog.panic()
@@ -274,7 +303,9 @@ class MainWindow(QMainWindow):
             "    Nel BCI Core Recorder: Connect, poi Settings → Network →\n"
             "    'Sending data via UDP' (127.0.0.1, porta 1001), poi Play.\n"
             "    Poi premi EEG DAL VIVO: porta e formato si riconoscono da\n"
-            "    soli. Con due cuffie: due Recorder, porte 1001 e 1002.\n"
+            "    soli. Con due cuffie: due Recorder, anche sulla stessa\n"
+            "    porta — SOGNO_CANE li distingue e a ogni pannello dà il\n"
+            "    suo. Se uomo e cane risultano invertiti: SCAMBIA EEG.\n"
             "    Se nel Recorder è attivo solo LSL, attiva anche UDP.\n"
             "    Filtri del Recorder: meglio spenti — SOGNO_CANE toglie da\n"
             "    solo l'offset degli elettrodi e il ronzio a 50 Hz. Guida\n"

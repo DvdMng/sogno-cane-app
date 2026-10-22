@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.9.1 — due cuffie, due segnali distinti
+Segnalazione dal campo: con due sessioni del BCI Core Recorder attive (uomo
+e cane), SOGNO_CANE leggeva un solo EEG e lo mostrava uguale su entrambi i
+pannelli.
+
+**Diagnosi** (riprodotta con due Recorder simulati e i veri pannelli): l'app
+identificava un flusso EEG **solo dal numero di porta UDP**. Così:
+- due Recorder sulla stessa porta — ed è il caso normale, perché ogni
+  Recorder nasce su 1001 — finivano **mescolati campione per campione** in un
+  solo pannello;
+- l'opzione `SO_REUSEADDR` permetteva a due pannelli di ascoltare la stessa
+  porta: su Windows il secondo restava muto, oppure — con l'invio in
+  broadcast — riceveva **la copia esatta del primo** (lo specchio);
+- la ricerca automatica del secondo pannello riproponeva, e preselezionava, il
+  segnale già usato dal primo.
+Su 5 configurazioni realistiche la 0.9.0 ne sbagliava 4.
+
+**Soluzione:**
+- un solo ricevitore per porta (`UdpHub`), in **uso esclusivo**
+  (`SO_EXCLUSIVEADDRUSE`): nessun altro socket può più condividerla di
+  nascosto;
+- i dati vengono smistati per **mittente**: ogni Recorder trasmette dal suo
+  indirizzo, e **ogni pannello si prende un solo Recorder**. Funziona anche
+  con entrambi i Recorder sulla porta predefinita, senza toccare le
+  impostazioni;
+- la ricerca elenca ogni segnale con chi lo sta già usando e **non offre mai
+  al secondo pannello il segnale del primo**; se trasmette un solo Recorder,
+  il secondo pannello lo dice chiaramente invece di copiarlo;
+- se un Recorder riavvia la trasmissione (cambia indirizzo di invio), il suo
+  pannello lo ritrova da solo, senza toccare l'altro;
+- nuovo pulsante **SCAMBIA EEG**: se uomo e cane risultano invertiti si
+  scambiano all'istante (i dati in rete non dicono quale cuffia sia del
+  cane: lo sa solo chi le indossa). Il dialogo di scelta mostra la batteria
+  di ciascun segnale, da confrontare con la finestra del Recorder;
+- la porta 1000 non viene più sondata: è quella su cui il Recorder *ascolta*
+  i trigger;
+- `--live-test` misura ogni cuffia separatamente, fianco a fianco.
+
+Verificato con due registrazioni reali del BCI Core inviate insieme sulla
+stessa porta 1001: ciascun pannello riceve la sua, con i contatori dei
+campioni tutti consecutivi (nessuna mescolanza), e il MIDI reale esce da
+entrambi. Test: +13, **216 totali**.
+
 ## 0.9.0 — pronto per le cuffie vere: verificato sui dati reali del BCI Core
 Studiando la g.tec Suite 2024 arrivata con i dispositivi, il codice sorgente
 ufficiale dei ricevitori g.tec e le registrazioni pubbliche fatte col

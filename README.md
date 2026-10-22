@@ -24,8 +24,9 @@ stream di rete del **Unicorn BCI Core Recorder** di g.tec.
    toglie da sola offset degli elettrodi e ronzio a 50 Hz.
 2. In SOGNO_CANE premi **EEG DAL VIVO** sul pannello: porta e formato si
    riconoscono da soli.
-3. Con **due** cuffie (umano + cane): due Recorder, **una porta ciascuno**
-   (1001 umano, 1002 cane), EEG DAL VIVO su entrambi i pannelli.
+3. Con **due** cuffie (umano + cane): due Recorder, anche sulla **stessa**
+   porta 1001 — l'app li distingue dal mittente e ne dà uno per pannello.
+   EEG DAL VIVO su entrambi i pannelli; se risultano invertiti, **SCAMBIA EEG**.
 
 Verifica rapida senza aprire l'app:
 
@@ -38,6 +39,14 @@ CSV `EXG 1..8, SATURATION, CNT, BAT, VALID, DT, TRIG`, anche con colonne
 disattivate) e **binario** a 17 float dell'Unicorn UDP Interface (Hybrid
 Black). Le registrazioni **CSV** e **BDF+** del Recorder si riproducono con
 **FILE**. Guida completa: `portable/EEG_COLLEGAMENTO.txt`.
+
+## Novità della versione 0.9.1
+
+* **Due cuffie, due segnali distinti.** Con due BCI Core Recorder attivi
+  l'app leggeva un solo EEG e lo mostrava su entrambi i pannelli. Ora ogni
+  pannello si prende il suo Recorder — anche se entrambi trasmettono sulla
+  stessa porta predefinita — e non copia mai il segnale dell'altro.
+* **SCAMBIA EEG**: se uomo e cane risultano invertiti, li scambia all'istante.
 
 ## Novità della versione 0.9.0
 

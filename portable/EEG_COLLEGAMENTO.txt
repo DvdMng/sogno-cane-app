@@ -64,13 +64,27 @@ l'offset sia i 50 Hz, quindi:
 4) DUE EEG INSIEME (UMANO + CANE)
 ---------------------------------
 
-Ogni cuffia ha bisogno del SUO Recorder e della SUA porta UDP:
+Ogni cuffia ha il SUO Recorder. La porta UDP puo' anche essere la stessa
+(1001, quella predefinita): SOGNO_CANE riconosce i due Recorder dal loro
+indirizzo di invio e a ogni pannello ne da' uno solo, senza mescolarli.
 
-   umano -> Recorder 1 -> porta 1001 -> pannello UMANO -> porta MIDI 1
-   cane  -> Recorder 2 -> porta 1002 -> pannello CANE  -> porta MIDI 2
+   umano -> Recorder 1 -> UDP 1001 -> pannello UMANO
+   cane  -> Recorder 2 -> UDP 1001 (o 1002) -> pannello CANE
 
-Premi EEG DAL VIVO su entrambi i pannelli: se l'app trova due segnali ti
-chiede quale va su quel pannello.
+   1. avvia l'invio UDP (e Play) in ENTRAMBI i Recorder
+   2. premi EEG DAL VIVO sul pannello UMANO: se ci sono due segnali ti
+      chiede quale; la BATTERIA mostrata aiuta a riconoscerlo (confrontala
+      con quella che vedi nella finestra di ciascun Recorder)
+   3. premi EEG DAL VIVO sul pannello CANE: prende da solo il segnale
+      rimasto libero
+
+Per controllare chi e' chi: tocca un elettrodo della cuffia del cane e
+guarda quale pannello si muove. Se uomo e cane sono invertiti, premi
+SCAMBIA EEG (in alto, accanto a PANIC): si scambiano all'istante, senza
+ricollegare nulla.
+
+Se trasmette un solo Recorder, il secondo pannello te lo dice invece di
+copiare il segnale del primo.
 
 
 5) SE NON ARRIVA NIENTE

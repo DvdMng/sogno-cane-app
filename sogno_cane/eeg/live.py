@@ -29,19 +29,37 @@ Supported senders (both auto-detected, per datagram)
 
 Text versus binary is told apart by the bytes themselves: a float32 payload
 is never made only of digits, separators and newlines. The column layout is
-then inferred from the channel count, so the user only has to pick a port.
+then inferred from the channel count.
+
+Two headsets: streams are identified by SENDER, not by port
+-----------------------------------------------------------
+Every Recorder instance sends to UDP 1001 unless someone changes it, so a
+human + dog rig usually means two senders on one port. Identifying a stream
+by its port alone (0.7–0.9) mixed the two brains into one panel, and since
+both panels could listen on the same port, the second panel ended up
+mirroring the first. Now:
+
+* :class:`UdpHub` owns **one exclusively bound socket per port** for the
+  whole app (``SO_EXCLUSIVEADDRUSE`` on Windows, where ``SO_REUSEADDR``
+  lets a second socket silently share a port), and routes every datagram by
+  its sender address — each Recorder sends from its own socket.
+* A :class:`UnicornLiveSource` (one per panel) claims **one sender**. With no
+  explicit sender it adopts the first one nobody else has claimed, so two
+  panels on the same port split the two headsets between them.
+* Discovery reports every (port, sender) stream and which panel already uses
+  it, so the second panel is never offered the first panel's signal.
+* If a claimed sender falls silent and a new unclaimed one appears on the
+  port (a Recorder restarted its network output), the panel adopts it.
 
 Design notes
 ------------
-* A daemon thread owns the socket and fills a bounded buffer, so a slow or
-  stalled consumer can never grow latency without bound: the oldest samples
-  are dropped (and counted) instead.
+* A bounded buffer per consumer: a slow or stalled consumer can never grow
+  latency without bound; the oldest samples are dropped (and counted).
 * :meth:`UnicornLiveSource.next_packet` never returns ``None`` while the
   source is open. A gap on the wire yields a packet that *holds the last
   sample* and is flagged invalid — not zeros: on DC-coupled hardware a jump
   from tens of thousands of microvolts to zero is a giant step that would
-  fire every voice at once. The engine keeps running and picks the signal
-  back up by itself when the device returns.
+  fire every voice at once.
 """
 from __future__ import annotations
 
@@ -49,6 +67,7 @@ import socket
 import threading
 import time
 from collections import Counter, deque
+from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
@@ -62,9 +81,10 @@ from sogno_cane.eeg.unicorn_packet import (
     UnicornPacket,
 )
 
-# Default UDP ports of the g.tec senders.
+# Default UDP ports of the g.tec senders. (1000 is deliberately absent: it
+# is the Recorder's own trigger INPUT port, never a data output.)
 DEFAULT_UDP_PORT: int = 1001          # BCI Core Recorder "send data" default
-ALT_UDP_PORTS: tuple[int, ...] = (1001, 1002, 1003, 1004, 5001, 1000)
+ALT_UDP_PORTS: tuple[int, ...] = (1001, 1002, 1003, 1004, 5001)
 
 # Channel counts we know how to interpret.
 LAYOUT_UNICORN_17 = "unicorn-17"      # UDP Interface / Hybrid Black
@@ -81,6 +101,12 @@ _REC_SAT, _REC_CNT, _REC_BAT, _REC_VALID, _REC_DT, _REC_STATUS = range(8, 14)
 
 # Bytes that may appear in a text sample line (plus header letters).
 _TEXT_OK = frozenset(range(0x20, 0x7F)) | {0x09, 0x0A, 0x0D}
+
+# A claimed sender silent for this long may be replaced by a new unclaimed
+# sender on the same port (the Recorder restarted its network output).
+ADOPT_AFTER_SECONDS = 1.5
+
+Sender = tuple  # (ip, port) of the datagram's source
 
 
 def describe_layout(n_channels: int) -> str:
@@ -204,6 +230,284 @@ def parse_binary_datagram(
     return frame
 
 
+def decode_datagram(
+    data: bytes, locked_channels: Optional[int] = None,
+) -> Optional[tuple[np.ndarray, str, int]]:
+    """``(frame, encoding, header_lines)`` for any supported datagram.
+
+    The frame may have zero rows (header-only datagram). ``None`` means the
+    datagram is not a Unicorn stream at all.
+    """
+    # NUL padding is only stripped to *recognise* text: in a float32
+    # datagram trailing zero bytes are real values (0.0 is four NULs),
+    # so binary decoding must always see the original bytes.
+    text_view = data.rstrip(b"\x00")
+    if looks_like_text(text_view):
+        try:
+            parsed = parse_text_datagram(text_view)
+        except UnicodeDecodeError:
+            return None
+        if parsed is None:
+            return None
+        frame, headers = parsed
+        return frame, ENCODING_TEXT, headers
+    frame = parse_binary_datagram(data, locked_channels)
+    if frame is None:
+        return None
+    return frame, ENCODING_BINARY, 0
+
+
+def _battery_of(frame: np.ndarray) -> Optional[float]:
+    """Battery percentage carried by a frame, when its layout has one."""
+    if frame.shape[0] == 0:
+        return None
+    layout = describe_layout(frame.shape[1])
+    if layout == LAYOUT_RECORDER_14:
+        return float(frame[-1, _REC_BAT])
+    if layout == LAYOUT_UNICORN_17:
+        return float(frame[-1, BATTERY_INDEX])
+    return None
+
+
+def _exclusive_udp_socket(host: str, port: int) -> socket.socket:
+    """Bind ``port`` so that no other socket can share it.
+
+    On Windows ``SO_REUSEADDR`` would let a second socket bind the same
+    port and silently split (or, for broadcast, duplicate) the traffic —
+    exactly how a second panel came to mirror the first. Exclusive use
+    turns that into a clear "port in use" error instead.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+    if exclusive is not None:
+        sock.setsockopt(socket.SOL_SOCKET, exclusive, 1)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20)
+    except OSError:
+        pass
+    try:
+        sock.bind((host, port))
+    except OSError:
+        sock.close()
+        raise
+    sock.settimeout(0.2)
+    return sock
+
+
+# --------------------------------------------------------------------------- #
+# Per-port hub: one socket, many senders, many consumers                      #
+# --------------------------------------------------------------------------- #
+
+@dataclass
+class _SenderState:
+    first_seen: float
+    last_seen: float
+    datagrams: int = 0
+    last_data: bytes = b""
+
+
+@dataclass(frozen=True)
+class StreamInfo:
+    """One Unicorn stream as seen on the wire: a sender on a port."""
+
+    port: int
+    sender: Sender
+    channels: int
+    layout: str
+    encoding: str
+    battery: Optional[float]
+    claimed_by: Optional[str]
+    seconds_since_data: float
+
+    def as_dict(self) -> dict:
+        return {
+            "port": self.port,
+            "sender": self.sender,
+            "channels": self.channels,
+            "layout": self.layout,
+            "encoding": self.encoding,
+            "battery": self.battery,
+            "claimed_by": self.claimed_by,
+        }
+
+
+class UdpHub:
+    """The one socket listening on a UDP port, shared by every consumer.
+
+    Datagrams are routed by sender address: a sender claimed by a consumer
+    goes to that consumer only; an unclaimed sender is offered to a consumer
+    still waiting for one (and claimed if its data decodes); everything is
+    recorded so discovery can list who is talking on the port.
+    """
+
+    _registry: dict[int, "UdpHub"] = {}
+    _registry_lock = threading.Lock()
+
+    def __init__(self, port: int, host: str) -> None:
+        self.port = int(port)
+        self.host = host
+        self._sock = _exclusive_udp_socket(host, self.port)
+        self._lock = threading.Lock()
+        self._consumers: list["UnicornLiveSource"] = []
+        self._claims: dict[Sender, "UnicornLiveSource"] = {}
+        self._senders: dict[Sender, _SenderState] = {}
+        self._holds = 0                 # temporary holds taken by discovery
+        self._stop = threading.Event()
+        self._thread = threading.Thread(
+            target=self._rx_loop, name=f"SOGNO_CANE-udp-{self.port}",
+            daemon=True,
+        )
+        self._thread.start()
+
+    # -- registry --------------------------------------------------------- #
+
+    @classmethod
+    def acquire(cls, port: int, host: str = "") -> "UdpHub":
+        """The hub for ``port``, binding it first if nobody has yet."""
+        with cls._registry_lock:
+            hub = cls._registry.get(int(port))
+            if hub is None or hub._stop.is_set():
+                hub = cls(port, host)
+                cls._registry[int(port)] = hub
+            return hub
+
+    @classmethod
+    def existing(cls, port: int) -> Optional["UdpHub"]:
+        with cls._registry_lock:
+            hub = cls._registry.get(int(port))
+            return None if hub is None or hub._stop.is_set() else hub
+
+    def _maybe_close(self) -> None:
+        with self._lock:
+            idle = not self._consumers and self._holds <= 0
+        if not idle:
+            return
+        with UdpHub._registry_lock:
+            if UdpHub._registry.get(self.port) is self:
+                del UdpHub._registry[self.port]
+        self._stop.set()
+        try:
+            self._sock.close()
+        except Exception:
+            pass
+        if self._thread.is_alive() and \
+                threading.current_thread() is not self._thread:
+            self._thread.join(timeout=1.0)
+
+    # -- discovery holds -------------------------------------------------- #
+
+    def hold(self) -> None:
+        with self._lock:
+            self._holds += 1
+
+    def release_hold(self) -> None:
+        with self._lock:
+            self._holds -= 1
+        self._maybe_close()
+
+    # -- consumers -------------------------------------------------------- #
+
+    def subscribe(self, consumer: "UnicornLiveSource",
+                  sender: Optional[Sender]) -> None:
+        with self._lock:
+            if sender is not None:
+                owner = self._claims.get(sender)
+                if owner is not None and owner is not consumer:
+                    raise OSError(
+                        f"the stream from {sender[0]}:{sender[1]} on UDP "
+                        f"{self.port} is already used by {owner.label}"
+                    )
+                self._claims[sender] = consumer
+            if consumer not in self._consumers:
+                self._consumers.append(consumer)
+
+    def unsubscribe(self, consumer: "UnicornLiveSource") -> None:
+        with self._lock:
+            if consumer in self._consumers:
+                self._consumers.remove(consumer)
+            for s in [s for s, c in self._claims.items() if c is consumer]:
+                del self._claims[s]
+        self._maybe_close()
+
+    def streams(self, max_age: float = 3.0) -> list[StreamInfo]:
+        """Every sender heard on this port within ``max_age`` seconds."""
+        now = time.monotonic()
+        with self._lock:
+            snapshot = [
+                (s, st.last_seen, st.last_data, self._claims.get(s))
+                for s, st in self._senders.items()
+                if now - st.last_seen <= max_age
+            ]
+        out = []
+        for sender, last_seen, data, owner in snapshot:
+            decoded = decode_datagram(data)
+            if decoded is None or decoded[0].shape[0] == 0:
+                continue
+            frame, encoding, _ = decoded
+            out.append(StreamInfo(
+                port=self.port,
+                sender=sender,
+                channels=int(frame.shape[1]),
+                layout=describe_layout(int(frame.shape[1])),
+                encoding=encoding,
+                battery=_battery_of(frame),
+                claimed_by=owner.label if owner is not None else None,
+                seconds_since_data=now - last_seen,
+            ))
+        return sorted(out, key=lambda s: (s.sender[0], s.sender[1]))
+
+    # -- receive loop ----------------------------------------------------- #
+
+    def _rx_loop(self) -> None:
+        sock = self._sock
+        while not self._stop.is_set():
+            try:
+                data, addr = sock.recvfrom(65535)
+            except socket.timeout:
+                continue
+            except OSError:
+                if self._stop.is_set():
+                    return
+                continue
+            sender = (addr[0], int(addr[1]))
+            now = time.monotonic()
+            with self._lock:
+                st = self._senders.get(sender)
+                if st is None:
+                    st = _SenderState(first_seen=now, last_seen=now)
+                    self._senders[sender] = st
+                st.last_seen = now
+                st.datagrams += 1
+                st.last_data = data
+                owner = self._claims.get(sender)
+                candidates = [] if owner is not None else [
+                    c for c in self._consumers if c._wants_sender(now)
+                ]
+                # Forget long-gone senders so the table cannot grow forever.
+                if len(self._senders) > 64:
+                    for s in [s for s, v in self._senders.items()
+                              if now - v.last_seen > 30.0
+                              and s not in self._claims]:
+                        del self._senders[s]
+            if owner is not None:
+                owner._ingest(data)
+                continue
+            for consumer in candidates:
+                if consumer._try_adopt(data, sender):
+                    with self._lock:
+                        if sender in self._claims:   # lost a race: ignore
+                            break
+                        for s in [s for s, c in self._claims.items()
+                                  if c is consumer]:
+                            del self._claims[s]
+                        self._claims[sender] = consumer
+                    break
+
+
+# --------------------------------------------------------------------------- #
+# Consumer: one per panel                                                     #
+# --------------------------------------------------------------------------- #
+
 class UnicornLiveSource:
     """A :class:`~sogno_cane.core.sources.PacketSource` fed by a UDP stream.
 
@@ -212,8 +516,9 @@ class UnicornLiveSource:
     port
         UDP port to listen on (the port configured in the g.tec sender).
     host
-        Interface to bind. ``""`` binds every interface, which is what you
-        want when the Unicorn tool runs on another machine.
+        Interface to bind when this source is the first on its port. ``""``
+        binds every interface, which is what you want when the Unicorn tool
+        runs on another machine.
     sample_rate_hz
         Nominal device rate; the Unicorn family streams at 250 Hz.
     packet_samples
@@ -221,6 +526,11 @@ class UnicornLiveSource:
     buffer_seconds
         Bound on the receive backlog. Older samples are dropped rather than
         queued, so latency stays flat if the consumer stalls.
+    sender
+        ``(ip, port)`` of the one sender to listen to. ``None`` adopts the
+        first sender on the port that no other source has claimed.
+    label
+        Who is listening (the panel name), shown to other panels.
     """
 
     def __init__(
@@ -230,21 +540,28 @@ class UnicornLiveSource:
         sample_rate_hz: int = 250,
         packet_samples: int = 25,
         buffer_seconds: float = 2.0,
+        sender: Optional[Sender] = None,
+        label: str = "",
     ) -> None:
         self.sample_rate_hz = int(sample_rate_hz)
         self.packet_samples = max(1, int(packet_samples))
         self.port = int(port)
         self.host = host
+        self.label = label or f"UDP {self.port}"
+        self._sender: Optional[Sender] = (
+            (sender[0], int(sender[1])) if sender is not None else None
+        )
 
         maxlen = max(self.packet_samples * 4,
                      int(buffer_seconds * self.sample_rate_hz))
         self._buf: deque = deque(maxlen=maxlen)
+        # The latest rows received, kept regardless of what the engine has
+        # consumed: lets diagnostics see "whose signal is this" at any time.
+        self._recent: deque = deque(maxlen=50)
         self._lock = threading.Lock()
         self._data_ready = threading.Event()
 
-        self._sock: Optional[socket.socket] = None
-        self._thread: Optional[threading.Thread] = None
-        self._stop = threading.Event()
+        self._hub: Optional[UdpHub] = None
         self._closed = False
 
         # Telemetry the UI surfaces.
@@ -253,6 +570,7 @@ class UnicornLiveSource:
         self._dropped = 0
         self._malformed = 0
         self._header_lines = 0
+        self._sender_changes = 0
         self._last_rx_monotonic: Optional[float] = None
         self._layout: Optional[str] = None
         self._layout_channels: Optional[int] = None
@@ -267,40 +585,25 @@ class UnicornLiveSource:
     # ------------------------------------------------------------------ #
 
     def open(self) -> None:
-        """Bind the socket and start receiving. Raises if the port is taken."""
-        if self._sock is not None:
+        """Join the hub of our port. Raises if the port is taken by another
+        application or the requested sender is already in use."""
+        if self._hub is not None:
             return
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        # A generous receive buffer absorbs scheduling hiccups at 250 Hz.
+        hub = UdpHub.acquire(self.port, self.host)
         try:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20)
+            hub.subscribe(self, self._sender)
         except OSError:
-            pass
-        sock.bind((self.host, self.port))
-        sock.settimeout(0.2)
-        self._sock = sock
+            hub._maybe_close()
+            raise
+        self._hub = hub
         self._closed = False
-        self._stop.clear()
-        self._thread = threading.Thread(
-            target=self._rx_loop, name=f"SOGNO_CANE-udp-{self.port}",
-            daemon=True,
-        )
-        self._thread.start()
 
     def close(self) -> None:
         self._closed = True
-        self._stop.set()
         self._data_ready.set()
-        sock, self._sock = self._sock, None
-        if sock is not None:
-            try:
-                sock.close()
-            except Exception:
-                pass
-        t, self._thread = self._thread, None
-        if t is not None and t.is_alive():
-            t.join(timeout=1.0)
+        hub, self._hub = self._hub, None
+        if hub is not None:
+            hub.unsubscribe(self)
 
     def reset(self) -> None:
         with self._lock:
@@ -313,7 +616,11 @@ class UnicornLiveSource:
 
     @property
     def is_open(self) -> bool:
-        return self._sock is not None
+        return self._hub is not None
+
+    @property
+    def sender(self) -> Optional[Sender]:
+        return self._sender
 
     @property
     def seconds_since_data(self) -> Optional[float]:
@@ -332,11 +639,13 @@ class UnicornLiveSource:
     def stats(self) -> dict:
         return {
             "port": self.port,
+            "sender": self._sender,
             "datagrams": self._datagrams,
             "samples": self._samples,
             "dropped": self._dropped,
             "malformed": self._malformed,
             "header_lines": self._header_lines,
+            "sender_changes": self._sender_changes,
             "layout": self._layout or "(in attesa di dati)",
             "channels": self._layout_channels,
             "encoding": self._encoding or "",
@@ -345,38 +654,59 @@ class UnicornLiveSource:
         }
 
     # ------------------------------------------------------------------ #
-    # Receive loop                                                       #
+    # Called by the hub (its thread)                                     #
     # ------------------------------------------------------------------ #
 
-    def _rx_loop(self) -> None:
-        sock = self._sock
-        while not self._stop.is_set() and sock is not None:
-            try:
-                data, _addr = sock.recvfrom(65535)
-            except socket.timeout:
-                continue
-            except OSError:
-                # Socket closed underneath us, or a transient network error.
-                if self._stop.is_set():
-                    return
-                continue
-            rows = self._parse(data)
-            if rows is None:
-                self._malformed += 1
-                continue
-            if rows.shape[0] == 0:
-                continue             # header-only datagram: nothing to play
-            self._datagrams += 1
-            self._last_rx_monotonic = time.monotonic()
-            with self._lock:
-                free = self._buf.maxlen - len(self._buf)
-                overflow = max(0, rows.shape[0] - free)
-                if overflow:
-                    self._dropped += overflow
-                for row in rows:
-                    self._buf.append(row)
-                self._samples += rows.shape[0]
-            self._data_ready.set()
+    def _wants_sender(self, now: float) -> bool:
+        """Free to take a new sender: none yet, or ours went quiet."""
+        if self._closed:
+            return False
+        if self._sender is None:
+            return True
+        last = self._last_rx_monotonic
+        return last is None or now - last >= ADOPT_AFTER_SECONDS
+
+    def _try_adopt(self, data: bytes, sender: Sender) -> bool:
+        """Claim ``sender`` if its datagram is real Unicorn data."""
+        rows = self._parse(data)
+        if rows is None:
+            self._malformed += 1
+            return False
+        if rows.shape[0] == 0:
+            return False             # header only: wait for real samples
+        if self._sender is not None and self._sender != sender:
+            self._sender_changes += 1
+        self._sender = sender
+        self._accept(rows)
+        return True
+
+    def _ingest(self, data: bytes) -> None:
+        rows = self._parse(data)
+        if rows is None:
+            self._malformed += 1
+            return
+        if rows.shape[0] == 0:
+            return                   # header-only datagram: nothing to play
+        self._accept(rows)
+
+    def _accept(self, rows: np.ndarray) -> None:
+        self._datagrams += 1
+        self._last_rx_monotonic = time.monotonic()
+        with self._lock:
+            free = self._buf.maxlen - len(self._buf)
+            overflow = max(0, rows.shape[0] - free)
+            if overflow:
+                self._dropped += overflow
+            for row in rows:
+                self._buf.append(row)
+                self._recent.append(row)
+            self._samples += rows.shape[0]
+        self._data_ready.set()
+
+    def recent_rows(self) -> list:
+        """Copies of the latest received rows (canonical 17 columns)."""
+        with self._lock:
+            return [r.copy() for r in self._recent]
 
     def _parse(self, data: bytes) -> Optional[np.ndarray]:
         """Decode one datagram into canonical 17-column float32 rows.
@@ -384,25 +714,11 @@ class UnicornLiveSource:
         Returns ``None`` for an undecodable datagram and an empty array for
         one that only carried a header line.
         """
-        # NUL padding is only stripped to *recognise* text: in a float32
-        # datagram trailing zero bytes are real values (0.0 is four NULs),
-        # so binary decoding must always see the original bytes.
-        text_view = data.rstrip(b"\x00")
-        if looks_like_text(text_view):
-            try:
-                parsed = parse_text_datagram(text_view)
-            except UnicodeDecodeError:
-                parsed = None
-            if parsed is None:
-                return None
-            frame, headers = parsed
-            self._header_lines += headers
-            encoding = ENCODING_TEXT
-        else:
-            frame = parse_binary_datagram(data, self._layout_channels)
-            if frame is None:
-                return None
-            encoding = ENCODING_BINARY
+        decoded = decode_datagram(data, self._layout_channels)
+        if decoded is None:
+            return None
+        frame, encoding, headers = decoded
+        self._header_lines += headers
         if frame.shape[0] == 0:
             return np.zeros((0, PACKET_VALUES), dtype=np.float32)
         n_ch = frame.shape[1]
@@ -424,14 +740,14 @@ class UnicornLiveSource:
         flagged invalid, rather than stopping the engine, so playback
         survives a dropout and resumes on its own.
         """
-        if self._closed and self._sock is None:
+        if self._closed and self._hub is None:
             return None
         want = self.packet_samples
         deadline = time.monotonic() + (want / float(self.sample_rate_hz)) * 2.0
         while True:
             with self._lock:
                 have = len(self._buf)
-            if have >= want or self._stop.is_set():
+            if have >= want or self._closed:
                 break
             if time.monotonic() >= deadline:
                 break
@@ -475,21 +791,42 @@ class UnicornLiveSource:
         return rows
 
 
-def _probe_channels(data: bytes) -> Optional[tuple[int, str]]:
-    """(channel count, encoding) of a datagram, or None if it is not ours."""
-    text_view = data.rstrip(b"\x00")
-    if looks_like_text(text_view):
-        try:
-            parsed = parse_text_datagram(text_view)
-        except UnicodeDecodeError:
-            return None
-        if parsed is None or parsed[0].shape[0] == 0:
-            return None
-        return int(parsed[0].shape[1]), ENCODING_TEXT
-    frame = parse_binary_datagram(data)
-    if frame is None:
-        return None
-    return int(frame.shape[1]), ENCODING_BINARY
+# --------------------------------------------------------------------------- #
+# Discovery                                                                   #
+# --------------------------------------------------------------------------- #
+
+def discover_streams(
+    ports: tuple[int, ...] = ALT_UDP_PORTS,
+    timeout: float = 1.5,
+    host: str = "",
+) -> list[StreamInfo]:
+    """Every Unicorn stream (sender on a port) heard within ``timeout``.
+
+    Ports already in use by a panel are not re-bound: their hub has been
+    listening all along and simply reports its senders — including which
+    panel claimed each one. Ports held by another application are skipped.
+    """
+    held: list[UdpHub] = []
+    for p in ports:
+        hub = UdpHub.existing(p)
+        if hub is None:
+            try:
+                hub = UdpHub.acquire(p, host)
+            except OSError:
+                continue
+        hub.hold()
+        held.append(hub)
+    try:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            time.sleep(0.05)
+        found: list[StreamInfo] = []
+        for hub in held:
+            found.extend(hub.streams(max_age=timeout + 0.5))
+        return sorted(found, key=lambda s: (s.port, s.sender))
+    finally:
+        for hub in held:
+            hub.release_hold()
 
 
 def probe_udp_ports(
@@ -497,50 +834,5 @@ def probe_udp_ports(
     timeout: float = 1.5,
     host: str = "",
 ) -> list[dict]:
-    """Listen briefly on candidate ports and report which ones carry data.
-
-    This is the plug-and-play helper: start the g.tec sender, hit EEG DAL
-    VIVO, and the app finds the port, the encoding and the channel layout
-    by itself.
-    """
-    found: list[dict] = []
-    socks: dict = {}
-    for p in ports:
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.bind((host, p))
-            s.setblocking(False)
-            socks[p] = s
-        except OSError:
-            # Port already in use (often by our own live source) or denied.
-            continue
-    try:
-        deadline = time.monotonic() + timeout
-        seen: dict = {}
-        while time.monotonic() < deadline and len(seen) < len(socks):
-            for p, s in socks.items():
-                if p in seen:
-                    continue
-                try:
-                    data, _ = s.recvfrom(65535)
-                except (BlockingIOError, OSError):
-                    continue
-                info = _probe_channels(data)
-                if info is not None:
-                    seen[p] = info
-            time.sleep(0.01)
-        for p, (n_ch, encoding) in seen.items():
-            found.append({
-                "port": p,
-                "channels": n_ch,
-                "layout": describe_layout(n_ch),
-                "encoding": encoding,
-            })
-    finally:
-        for s in socks.values():
-            try:
-                s.close()
-            except Exception:
-                pass
-    return sorted(found, key=lambda d: d["port"])
+    """Dict view of :func:`discover_streams` (one entry per stream)."""
+    return [s.as_dict() for s in discover_streams(ports, timeout, host)]

@@ -31,7 +31,7 @@ from sogno_cane.eeg.live import (
     ALT_UDP_PORTS,
     DEFAULT_UDP_PORT,
     UnicornLiveSource,
-    probe_udp_ports,
+    discover_streams,
 )
 from sogno_cane.eeg.profiles import ALL_PROFILES, DeviceProfile
 from sogno_cane.eeg.unicorn_packet import UnicornPacket
@@ -497,86 +497,149 @@ class DevicePanel(QWidget):
         else:
             self._connect_live()
 
-    def _connect_live(self, port: int | None = None) -> None:
-        """Find the g.tec sender and start consuming it.
+    def _connect_live(
+        self, port: int | None = None, sender: tuple | None = None,
+    ) -> None:
+        """Find this headset's stream and start consuming it.
 
         Plug and play: we listen on the documented ports for a moment and
-        adopt whichever one is actually carrying Unicorn datagrams, so the
-        user only has to have started the g.tec tool.
+        pick the Unicorn stream (a sender on a port) that no other panel is
+        using, so the user only has to have started the g.tec tool — even
+        when both Recorders send to the same default port.
         """
         if port is None:
-            port = self._discover_port()
-            if port is None:
+            chosen = self._discover_stream()
+            if chosen is None:
                 return
+            port, sender = chosen
         try:
-            live = UnicornLiveSource(port=int(port), packet_samples=25)
+            live = UnicornLiveSource(
+                port=int(port), packet_samples=25, sender=sender,
+                label=self._title,
+            )
             live.open()
         except OSError as exc:
             QMessageBox.warning(
                 self, "EEG dal vivo",
-                f"Non riesco ad ascoltare sulla porta UDP {port}:\n{exc}\n\n"
-                f"Un'altra applicazione (o l'altro pannello) la sta gia' "
-                f"usando. Scegli una porta diversa nel programma g.tec "
-                f"e riprova.",
+                f"Non riesco ad ascoltare questo segnale (UDP {port}):\n"
+                f"{exc}\n\n"
+                f"La porta è usata da un'altra applicazione, oppure il "
+                f"segnale è già collegato all'altro pannello.",
             )
             return
+        self._attach_live(live)
+
+    def _attach_live(self, live: UnicornLiveSource) -> None:
+        """Make ``live`` this panel's source and (re)start the engine."""
         self._live = live
+        live.label = self._title
         self._live_warned_no_data = False
         self._playback = None
-        self._source_lbl.setText(f"LIVE UNICORN  (UDP {port})")
-        self._source_lbl.setStyleSheet(f"color: {FG_GOOD};")
-        self._set_status(f"EEG DAL VIVO su UDP {port}", color=FG_GOOD)
+        self._show_live_label()
+        self._set_status(f"EEG DAL VIVO su UDP {live.port}", color=FG_GOOD)
         self._sync_mode_buttons()
         if self.is_streaming:
             self._stop_engine()
         self._start_engine()
 
-    def _discover_port(self) -> int | None:
-        """Probe the known ports; ask the user only if that is inconclusive."""
+    def _show_live_label(self) -> None:
+        live = self._live
+        if live is None:
+            return
+        who = ""
+        if live.sender is not None:
+            who = f" · mittente :{live.sender[1]}"
+        self._source_lbl.setText(f"LIVE UNICORN (UDP {live.port}{who})")
+        self._source_lbl.setStyleSheet(f"color: {FG_GOOD};")
+
+    def detach_live_source(self) -> UnicornLiveSource | None:
+        """Hand over this panel's live source (for SCAMBIA) without closing
+        it: its claim on the headset's stream stays valid."""
+        live, self._live = self._live, None
+        if live is None:
+            return None
+        if self.is_streaming:
+            self._stop_engine()
+        self._source_lbl.setText("")
+        self._sync_mode_buttons()
+        return live
+
+    def adopt_live_source(self, live: UnicornLiveSource) -> None:
+        """Take over a live source handed over by the other panel."""
+        self._attach_live(live)
+
+    @staticmethod
+    def _stream_label(s) -> str:
+        battery = (f", batteria {s.battery:.0f}%"
+                   if s.battery is not None else "")
+        return (f"UDP {s.port} · mittente :{s.sender[1]} · "
+                f"{_sender_name(s.layout)} ({s.encoding}){battery}")
+
+    def _discover_stream(self) -> tuple | None:
+        """Find a free stream; ask only if that is genuinely ambiguous.
+
+        Streams already claimed by the other panel are never offered — that
+        is what used to make the second panel mirror the first.
+        """
         self._set_status("Cerco il segnale dell'Unicorn…", color=FG_YELLOW)
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             QApplication.processEvents()
-            found = probe_udp_ports(ports=ALT_UDP_PORTS, timeout=1.5)
+            found = discover_streams(ports=ALT_UDP_PORTS, timeout=1.5)
         finally:
             QApplication.restoreOverrideCursor()
 
-        if len(found) == 1:
-            return int(found[0]["port"])
-        if len(found) > 1:
-            labels = [
-                f"UDP {f['port']}  —  {f['channels']} canali "
-                f"({_sender_name(f['layout'])}, {f.get('encoding', '')})"
-                for f in found
-            ]
+        free = [s for s in found if s.claimed_by is None]
+        taken = [s for s in found if s.claimed_by is not None]
+
+        if len(free) == 1:
+            return free[0].port, free[0].sender
+        if len(free) > 1:
+            labels = [self._stream_label(s) for s in free]
             choice, ok = QInputDialog.getItem(
                 self, "EEG dal vivo",
-                "Ho trovato più di un segnale Unicorn.\n"
-                "Scegli quello di questo dispositivo:",
+                f"Ci sono {len(free)} segnali Unicorn liberi.\n"
+                f"Scegli quello del pannello {self._title} "
+                f"(la batteria aiuta a riconoscerlo nel Recorder;\n"
+                f"se poi risultano invertiti usa SCAMBIA EEG):",
                 labels, 0, False,
             )
             if not ok:
                 self._set_status("FERMO", color=FG_DIM)
                 return None
-            return int(found[labels.index(choice)]["port"])
+            pick = free[labels.index(choice)]
+            return pick.port, pick.sender
+
+        if taken:
+            users = ", ".join(sorted({s.claimed_by for s in taken}))
+            self._set_status("Nessun segnale libero", color=FG_YELLOW)
+            QMessageBox.information(
+                self, "EEG dal vivo",
+                f"Arriva un solo segnale EEG ed è già collegato al pannello "
+                f"{users}.\n\n"
+                f"Per il pannello {self._title} avvia l'invio dal secondo "
+                f"BCI Core Recorder: Settings → Network → 'Sending data via "
+                f"UDP', poi Play. Può usare la stessa porta (1001): "
+                f"SOGNO_CANE distingue da solo i due Recorder.",
+            )
+            return None
 
         # Nothing heard: let the user name the port, and say why.
         self._set_status("Nessun segnale Unicorn trovato", color=FG_YELLOW)
         port, ok = QInputDialog.getInt(
             self, "EEG dal vivo",
             "Non arrivano dati Unicorn sulle porte solite.\n\n"
-            "Avvia prima il programma g.tec:\n"
-            "  • Unicorn BCI Core Recorder → Settings → Network →\n"
-            "    'Sending data via UDP'  (porta predefinita 1001), oppure\n"
-            "  • Unicorn Suite → DevTools → UnicornUDP.exe\n\n"
-            "Usa una porta diversa per ogni dispositivo (es. 1001 umano,\n"
-            "1002 cane), poi conferma la porta da ascoltare:",
+            "Nel BCI Core Recorder: Connect → Settings → Network →\n"
+            "'Sending data via UDP' (127.0.0.1, porta 1001) → Play.\n"
+            "Se è attivo solo LSL, attiva anche UDP.\n\n"
+            "Conferma la porta da ascoltare (il pannello si collegherà\n"
+            "al primo segnale libero che arriva su quella porta):",
             DEFAULT_UDP_PORT, 1, 65535, 1,
         )
         if not ok:
             self._set_status("FERMO", color=FG_DIM)
             return None
-        return int(port)
+        return int(port), None
 
     def _disconnect_live(self, restart: bool = True) -> None:
         live, self._live = self._live, None

@@ -1,7 +1,9 @@
 """Main application window for SOGNO_CANE."""
 from __future__ import annotations
 
+import html
 import threading
+import time
 
 import numpy as np
 from PySide6.QtCore import Qt, QTimer, Signal
@@ -31,7 +33,14 @@ from sogno_cane.ui.archive_panel import ArchivePanel
 from sogno_cane.ui.device_panel import DevicePanel
 from sogno_cane.ui.mapping_panel import MappingPanel
 from sogno_cane.ui.midi_monitor import MidiMonitor
-from sogno_cane.ui.theme import BackgroundWidget, ChromeTitle, app_icon
+from sogno_cane.ui.theme import (
+    ACCENT_CYAN,
+    ACCENT_PINK,
+    TEXT_DIM,
+    BackgroundWidget,
+    ChromeTitle,
+    app_icon,
+)
 
 
 class MainWindow(QMainWindow):
@@ -84,6 +93,9 @@ class MainWindow(QMainWindow):
         )
         self._archive_panel.load_to_human.connect(self._human.play_loaded)
         self._archive_panel.load_to_dog.connect(self._dog.play_loaded)
+        self._archive_panel.load_session.connect(self._play_session)
+        self._human.recording_changed.connect(self._sync_record_button)
+        self._dog.recording_changed.connect(self._sync_record_button)
         self._tabs.currentChanged.connect(self._on_tab_changed)
 
         # Spectrum refresh timer.
@@ -95,6 +107,19 @@ class MainWindow(QMainWindow):
         self._spectrum_timer.start()
 
         self._restore_settings()
+
+        # The configuration in use: which file (None = never saved) and
+        # what it held when last saved or loaded, to tell "modified".
+        self._config_path: str | None = None
+        self._config_snapshot = self._devices_state()
+        self._shown_config = None
+        self._restore_session()
+        self._refresh_config_view()
+        self._config_timer = QTimer(self)
+        self._config_timer.setInterval(1000)
+        self._config_timer.timeout.connect(self._refresh_config_view)
+        self._config_timer.start()
+
         self.statusBar().showMessage(
             "pronto — le registrazioni stanno in " + self._archive.root
         )
@@ -172,24 +197,49 @@ class MainWindow(QMainWindow):
         v = QVBoxLayout(wrap)
         v.setContentsMargins(0, 0, 0, 0)
 
-        # Config save/load bar.
+        # The configuration in use, and what can be done with it.
         bar = QHBoxLayout()
-        hint = QLabel(
-            "Come l'EEG di ogni dispositivo pilota il MIDI. I canali MIDI sono "
-            "1–16 (come in Ableton). Puoi salvare tutto come configurazione."
+        bar.setSpacing(8)
+        cap = QLabel("CONFIGURAZIONE ATTUALE")
+        cap.setStyleSheet("font-weight: 700; letter-spacing: 2px;")
+        bar.addWidget(cap)
+        self._cfg_name_lbl = QLabel("")
+        self._cfg_name_lbl.setStyleSheet(
+            f"color: {ACCENT_CYAN}; font-weight: 700; font-size: 11pt;"
         )
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: #7F7298; padding: 4px 2px;")
-        bar.addWidget(hint, 1)
-        save_btn = QPushButton("SALVA CONFIG")
-        save_btn.setToolTip("Salva l'intera configurazione (entrambi i dispositivi).")
+        bar.addWidget(self._cfg_name_lbl)
+        self._cfg_state_lbl = QLabel("")
+        bar.addWidget(self._cfg_state_lbl)
+        bar.addStretch(1)
+        save_btn = QPushButton("SALVA")
+        save_btn.setToolTip(
+            "Sovrascrive la configurazione attuale con le impostazioni di "
+            "adesso\n(entrambi i dispositivi). Se non ha ancora un nome, te "
+            "lo chiede."
+        )
         save_btn.clicked.connect(self._save_config)
         bar.addWidget(save_btn)
-        load_btn = QPushButton("CARICA CONFIG")
+        save_as_btn = QPushButton("SALVA COME…")
+        save_as_btn.setToolTip(
+            "Salva le impostazioni di adesso come una nuova configurazione."
+        )
+        save_as_btn.clicked.connect(self._save_config_as)
+        bar.addWidget(save_as_btn)
+        load_btn = QPushButton("CARICA…")
         load_btn.setToolTip("Carica una configurazione salvata.")
         load_btn.clicked.connect(self._load_config)
         bar.addWidget(load_btn)
         v.addLayout(bar)
+
+        hint = QLabel(
+            "Come l'EEG di ogni dispositivo pilota il MIDI. I canali MIDI sono "
+            "1–16 (come in Ableton). Ogni modifica vale subito; la "
+            "configurazione salva tutto, per entrambi i dispositivi, e alla "
+            "riapertura ritrovi quella in uso."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #7F7298; padding: 0 2px 4px;")
+        v.addWidget(hint)
 
         self._mapping_tabs = QTabWidget()
         self._rebuild_mapping_tabs()
@@ -215,6 +265,15 @@ class MainWindow(QMainWindow):
         stop_all = QPushButton("FERMA TUTTO")
         stop_all.clicked.connect(self._stop_all)
         bar.addWidget(stop_all)
+        self._rec_both_btn = QPushButton("● REGISTRA UOMO+CANE")
+        self._rec_both_btn.setToolTip(
+            "Avvia la registrazione dei due pannelli nello stesso istante\n"
+            "(e fa partire i pannelli fermi). In ARCHIVIO le due registrazioni\n"
+            "hanno lo stesso nome di sessione e si ricaricano insieme con\n"
+            "CARICA SESSIONE. Premi di nuovo per fermarle entrambe."
+        )
+        self._rec_both_btn.clicked.connect(self._toggle_record_both)
+        bar.addWidget(self._rec_both_btn)
         panic = QPushButton("PANIC")
         panic.setToolTip("Manda All-Notes-Off su tutti i canali MIDI.")
         panic.clicked.connect(self._panic)
@@ -227,6 +286,19 @@ class MainWindow(QMainWindow):
         swap.clicked.connect(self._swap_live_eeg)
         bar.addWidget(swap)
         bar.addStretch(1)
+        self._cfg_studio_lbl = QLabel("")
+        self._cfg_studio_lbl.setToolTip(
+            "Configurazione attuale (la mappatura di entrambi i dispositivi).\n"
+            "Il pallino rosa vuol dire: ci sono modifiche non salvate.\n"
+            "SALVA la sovrascrive; per salvarla con un altro nome o caricarne\n"
+            "un'altra vai nella scheda MAPPATURA."
+        )
+        bar.addWidget(self._cfg_studio_lbl)
+        cfg_save = QPushButton("SALVA")
+        cfg_save.setToolTip("Sovrascrive la configurazione attuale.")
+        cfg_save.clicked.connect(self._save_config)
+        bar.addWidget(cfg_save)
+        bar.addSpacing(10)
         self._version_lbl = QLabel(f"v{__version__}")
         self._version_lbl.setObjectName("VersionTag")
         self._version_lbl.setToolTip(
@@ -257,6 +329,59 @@ class MainWindow(QMainWindow):
         for d in (self._human, self._dog):
             if d.is_streaming:
                 d._toggle_stream()
+
+    def _toggle_record_both(self) -> None:
+        """Record UOMO and CANE together, or stop whatever is recording.
+
+        Both panels are running before either recorder starts, then the two
+        recorders start in the same instant: the pair lines up to within one
+        packet (~16 ms with the headsets, 100 ms with simulator or file).
+        """
+        panels = (self._human, self._dog)
+        if any(p.is_recording for p in panels):
+            for p in panels:
+                p.stop_recording(save=True)
+            self.statusBar().showMessage(
+                "Registrazione UOMO+CANE salvata in ARCHIVIO", 6000,
+            )
+            return
+        for p in panels:
+            if not p.is_streaming:
+                p._toggle_stream()
+        session = time.strftime("sess-%Y%m%d-%H%M%S")
+        started = self._archive.now_iso()
+        for p in panels:
+            p.start_recording(session=session, started=started)
+        self.statusBar().showMessage(
+            f"Registrazione UOMO+CANE in corso — sessione {started}", 6000,
+        )
+
+    def _sync_record_button(self, *_args) -> None:
+        # While anything records (a pair or a single panel) the button
+        # stops every recording, and says so.
+        busy = self._human.is_recording or self._dog.is_recording
+        self._rec_both_btn.setText(
+            "■ FERMA REGISTRAZIONI" if busy else "● REGISTRA UOMO+CANE"
+        )
+
+    def _play_session(self, human_loaded, dog_loaded) -> None:
+        """Play a recorded UOMO+CANE pair on its two panels, in step."""
+        pairs = [
+            (p, ld) for p, ld in ((self._human, human_loaded),
+                                  (self._dog, dog_loaded))
+            if ld is not None
+        ]
+        for p, _ld in pairs:
+            if p.is_streaming:
+                p._toggle_stream()
+        for p, ld in pairs:
+            p.play_loaded(ld, autostart=False)
+        for p, _ld in pairs:             # start together
+            p._toggle_stream()
+        self._tabs.setCurrentIndex(0)
+        self.statusBar().showMessage(
+            "Sessione UOMO+CANE in riproduzione sui due pannelli", 6000,
+        )
 
     def _swap_live_eeg(self) -> None:
         """Exchange the two panels' live headsets.
@@ -315,11 +440,24 @@ class MainWindow(QMainWindow):
             "  a posto, rosa qualcosa non va (nessun dato EEG, MIDI non\n"
             "  collegato, invii falliti).\n\n"
             "REGISTRARE E RIASCOLTARE\n"
-            "  • ● REGISTRA cattura il segnale in arrivo nell'archivio.\n"
+            "  • ● REGISTRA su un pannello registra quel pannello.\n"
+            "  • ● REGISTRA UOMO+CANE, in alto, avvia le due registrazioni\n"
+            "    nello stesso istante. In ARCHIVIO la coppia ha lo stesso\n"
+            "    nome di sessione e CARICA SESSIONE la riproduce sui due\n"
+            "    pannelli insieme.\n"
             "  • Dalla scheda ARCHIVIO puoi rinominare, tagliare un\n"
             "    intervallo, esportare in CSV, eliminare o ricaricare una\n"
             "    registrazione in un dispositivo.\n\n"
+            "CONFIGURAZIONE\n"
+            "  • In alto e nella scheda MAPPATURA è indicata la\n"
+            "    configurazione in uso; il pallino rosa segnala modifiche\n"
+            "    non salvate. SALVA la sovrascrive, SALVA COME… ne crea\n"
+            "    una nuova, CARICA… ne apre un'altra. Alla riapertura\n"
+            "    l'app riparte dalla configurazione in uso, comprese le\n"
+            "    modifiche non ancora salvate.\n\n"
             "MUSICALITÀ (scheda MAPPATURA)\n"
+            "  • ogni scheda si apre con la descrizione della voce: cosa\n"
+            "    ascolta, cosa invia e come si usa in Ableton;\n"
             "  • intervallo / durata minima / soglia di cambiamento\n"
             "    regolano quanto è rada ogni voce;\n"
             "  • 'note length' quanto dura ogni nota (15 ms = trigger per\n"
@@ -445,40 +583,62 @@ class MainWindow(QMainWindow):
             for key, dev in (("human", self._human), ("dog", self._dog))
         }
 
-    def _save_config(self) -> None:
-        name, ok = QInputDialog.getText(
-            self, "Salva configurazione", "Nome della configurazione:",
-            text="my_config",
-        )
-        if not ok or not name.strip():
-            return
-        safe = "".join(
-            c if (c.isalnum() or c in " -_") else "-" for c in name.strip()
-        ).strip() or "config"
-        path = os.path.join(appconfig.configs_dir(), f"{safe}.json")
-        try:
-            cfg = appconfig.build_config(self._collect_devices())
-            appconfig.save_config(path, cfg)
-            self.statusBar().showMessage(f"Configurazione salvata: {path}", 6000)
-        except Exception as e:
-            QMessageBox.warning(self, "Salvataggio fallito", str(e))
+    def _devices_state(self) -> dict:
+        """What a configuration holds, to tell whether it was modified.
 
-    def _load_config(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Carica configurazione",
-            appconfig.configs_dir(),
-            "Configurazione SOGNO_CANE (*.json);;Tutti i file (*)",
+        The MIDI port is left out on purpose: it depends on which ports
+        exist on this PC right now, not on what the user changed.
+        """
+        return {
+            key: {
+                "profile": dev.profile.name,
+                "loop": dev._loop_cb.isChecked(),
+                "bundle": appconfig.serialize_bundle(dev.bundle),
+            }
+            for key, dev in (("human", self._human), ("dog", self._dog))
+        }
+
+    def _config_name(self) -> str:
+        if not self._config_path:
+            return "predefinita"
+        return os.path.splitext(os.path.basename(self._config_path))[0]
+
+    def _config_dirty(self) -> bool:
+        return self._devices_state() != self._config_snapshot
+
+    def _refresh_config_view(self) -> None:
+        """Show which configuration is in use and whether it changed."""
+        name = self._config_name()
+        dirty = self._config_dirty()
+        if (name, dirty) == self._shown_config:
+            return
+        self._shown_config = (name, dirty)
+        never_saved = not self._config_path
+        if dirty:
+            state = ("● non salvata" if never_saved
+                     else "● modifiche non salvate")
+            colour = ACCENT_PINK
+        else:
+            state = ("impostazioni di partenza" if never_saved
+                     else "salvata")
+            colour = TEXT_DIM
+        self._cfg_name_lbl.setText(name)
+        self._cfg_state_lbl.setText(state)
+        self._cfg_state_lbl.setStyleSheet(f"color: {colour};")
+        short = name if len(name) <= 24 else name[:23] + "…"
+        dot = (f" <span style='color:{ACCENT_PINK}'>●</span>" if dirty
+               else "")
+        self._cfg_studio_lbl.setText(
+            f"<span style='color:{TEXT_DIM}'>CONFIG</span> "
+            f"<b>{html.escape(short)}</b>{dot}"
         )
-        if not path:
-            return
-        try:
-            data = appconfig.load_config(path)
-        except Exception as e:
-            QMessageBox.warning(self, "Caricamento fallito", str(e))
-            return
-        devs = data.get("devices", {})
+        self.setWindowTitle(
+            f"SOGNO_CANE {__version__} — {name}" + (" ●" if dirty else "")
+        )
+
+    def _apply_devices(self, devs: dict) -> None:
         for key, dev in (("human", self._human), ("dog", self._dog)):
-            dd = devs.get(key)
+            dd = devs.get(key) if isinstance(devs, dict) else None
             if not isinstance(dd, dict):
                 continue
             appconfig.apply_bundle_config(dev.bundle, dd.get("bundle", {}))
@@ -492,9 +652,115 @@ class MainWindow(QMainWindow):
             if port:
                 dev.set_port_name(port)
         self._rebuild_mapping_tabs()
-        self.statusBar().showMessage(
-            f"Configurazione caricata: {os.path.basename(path)}", 6000
+
+    def _save_config(self) -> None:
+        """SALVA: overwrite the configuration in use, without questions."""
+        if not self._config_path:
+            self._save_config_as()
+            return
+        self._write_config(self._config_path)
+
+    def _save_config_as(self) -> None:
+        name, ok = QInputDialog.getText(
+            self, "Salva configurazione come", "Nome della configurazione:",
+            text=self._config_name() if self._config_path
+            else "nuova_configurazione",
         )
+        if not ok or not name.strip():
+            return
+        safe = "".join(
+            c if (c.isalnum() or c in " -_") else "-" for c in name.strip()
+        ).strip() or "config"
+        path = os.path.join(appconfig.configs_dir(), f"{safe}.json")
+        same = bool(self._config_path) and (
+            os.path.normcase(os.path.abspath(path))
+            == os.path.normcase(os.path.abspath(self._config_path))
+        )
+        if os.path.exists(path) and not same:
+            if QMessageBox.question(
+                self, "Sovrascrivere?",
+                f"Esiste già una configurazione «{safe}».\n"
+                "Sovrascriverla con le impostazioni di adesso?",
+            ) != QMessageBox.StandardButton.Yes:
+                return
+        self._write_config(path)
+
+    def _write_config(self, path: str) -> None:
+        try:
+            cfg = appconfig.build_config(self._collect_devices())
+            appconfig.save_config(path, cfg)
+        except Exception as e:
+            QMessageBox.warning(self, "Salvataggio fallito", str(e))
+            return
+        self._config_path = path
+        self._config_snapshot = self._devices_state()
+        self._refresh_config_view()
+        self._save_session()
+        self.statusBar().showMessage(
+            f"Configurazione «{self._config_name()}» salvata", 6000
+        )
+
+    def _load_config(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Carica configurazione",
+            appconfig.configs_dir(),
+            "Configurazione SOGNO_CANE (*.json);;Tutti i file (*)",
+        )
+        if not path:
+            return
+        if self._config_dirty() and QMessageBox.question(
+            self, "Modifiche non salvate",
+            f"Le modifiche a «{self._config_name()}» non sono salvate e "
+            f"andrebbero perse.\nCaricare comunque "
+            f"«{os.path.splitext(os.path.basename(path))[0]}»?",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            data = appconfig.load_config(path)
+        except Exception as e:
+            QMessageBox.warning(self, "Caricamento fallito", str(e))
+            return
+        self._apply_devices(data.get("devices", {}))
+        self._config_path = path
+        self._config_snapshot = self._devices_state()
+        self._refresh_config_view()
+        self._save_session()
+        self.statusBar().showMessage(
+            f"Configurazione «{self._config_name()}» caricata", 6000
+        )
+
+    def _save_session(self) -> None:
+        """Remember the configuration in use and the working state."""
+        try:
+            appconfig.save_session(
+                appconfig.build_config(self._collect_devices()),
+                self._config_path,
+            )
+        except Exception:
+            pass
+
+    def _restore_session(self) -> None:
+        """Reopen with the configuration that was in use, as it was left.
+
+        The saved file is applied first and becomes the reference for
+        "modified"; the working state is applied on top, so changes that
+        were never saved come back too, flagged as unsaved.
+        """
+        data, path = appconfig.load_session()
+        if data is None:
+            return
+        if path and os.path.exists(path):
+            try:
+                self._apply_devices(
+                    appconfig.load_config(path).get("devices", {})
+                )
+                self._config_snapshot = self._devices_state()
+            except Exception:
+                path = None
+        else:
+            path = None
+        self._apply_devices(data.get("devices", {}))
+        self._config_path = path
 
     # ------------------------------------------------------------------ #
     # Spectrum                                                           #
@@ -575,6 +841,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt name
         self._save_settings()
+        self._save_session()
         self._human.shutdown()
         self._dog.shutdown()
         super().closeEvent(event)

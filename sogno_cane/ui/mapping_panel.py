@@ -29,6 +29,45 @@ from sogno_cane.midi.scales import NOTE_NAME_TO_PC, SCALES
 
 _BANDS = ["delta", "theta", "alpha", "beta", "gamma"]
 
+_BAND_TIP = (
+    "La banda di frequenza da ascoltare:\n"
+    "delta 0,5–4 Hz (sonno profondo) · theta 4–8 Hz (sonnolenza, sonno\n"
+    "leggero) · alpha 8–13 Hz (relax a occhi chiusi) · beta 13–30 Hz\n"
+    "(veglia attiva) · gamma 30–100 Hz (attività rapida; con elettrodi a\n"
+    "secco anche tensione muscolare)."
+)
+
+_ELECTRODES_TIP = (
+    "Quale elettrodo (0–7).\n"
+    "Umano: 0 Fz · 1 C3 · 2 Cz · 3 C4 · 4 Pz · 5 PO7 · 6 Oz · 7 PO8\n"
+    "Cane: 0 Fp · 1 F3 · 2 F4 · 3 Cz · 4 T3 · 5 T4 · 6 O1 · 7 O2"
+)
+
+_MIDI_CH_TIP = "Canale MIDI di uscita (1–16, come in Ableton)."
+
+_SMOOTH_TIP = (
+    "Quanto lisciare il valore prima di mandarlo:\n"
+    "0 = segue subito ogni oscillazione (movimento nervoso);\n"
+    "0,9 o più = si muove lentamente e dolcemente."
+)
+
+
+def _about(text: str) -> QLabel:
+    """Description at the top of a voice tab: input, rule, output, use.
+
+    The parameters alone did not say what a voice is for (field feedback:
+    "EVENTI, COERENZA, MARKOV, CLIP — changing the parameters I did not
+    understand what they do").
+    """
+    lbl = QLabel(text)
+    lbl.setWordWrap(True)
+    lbl.setTextFormat(Qt.TextFormat.PlainText)
+    lbl.setStyleSheet(
+        "color: #CFC6DA; background: rgba(20, 8, 40, 160); "
+        "border-left: 3px solid #A65AE2; padding: 8px 10px; margin-bottom: 6px;"
+    )
+    return lbl
+
 
 def _note_length_spinbox(current_seconds: float) -> QDoubleSpinBox:
     """Build the shared "note length" control (milliseconds).
@@ -87,8 +126,10 @@ def _adaptive_controls(
     sb.setValue(float(getattr(strategy, "relative_threshold",
                               default_threshold)))
     sb.setToolTip(
-        "Quante deviazioni tipiche sopra la norma deve salire la banda per\n"
-        "far scattare l'evento. Più alto = più raro."
+        "Di quante deviazioni tipiche la banda deve superare la propria media\n"
+        "recente (circa 20 s) perché l'evento scatti. Valori più alti rendono\n"
+        "gli eventi più rari: intorno a 2 sono frequenti, oltre 3 restano\n"
+        "solo i picchi marcati."
     )
     sb.valueChanged.connect(
         lambda v: set_safe(strategy, "relative_threshold", float(v))
@@ -167,6 +208,13 @@ class MappingPanel(QWidget):
             layout.addWidget(QLabel("per_channel_band non presente in questa configurazione."))
             return scroll
 
+        layout.addWidget(_about(
+            "Ogni elettrodo pilota una voce indipendente: la potenza della "
+            "banda selezionata su quell'elettrodo determina l'altezza della "
+            "nota all'interno della scala. Ogni voce usa un proprio canale "
+            "MIDI (predefiniti 1–8). I parametri di ANDAMENTO regolano la "
+            "frequenza con cui le voci cambiano nota."
+        ))
         enable = QCheckBox("ATTIVA NOTE PER CANALE")
         enable.setChecked(getattr(strategy, "enabled", True))
         enable.toggled.connect(
@@ -290,6 +338,7 @@ class MappingPanel(QWidget):
             band_cb = QComboBox()
             band_cb.addItems(_BANDS)
             band_cb.setCurrentText(getattr(voice, "band", "alpha"))
+            band_cb.setToolTip(_BAND_TIP)
             band_cb.currentTextChanged.connect(
                 lambda t, vc=voice: self._set_safe(vc, "band", t)
             )
@@ -339,6 +388,12 @@ class MappingPanel(QWidget):
             layout.addWidget(QLabel("per_channel_cc non presente in questa configurazione."))
             return scroll
 
+        layout.addWidget(_about(
+            "Ogni elettrodo genera un controllo continuo (Control Change) "
+            "proporzionale alla potenza della banda selezionata, con valori "
+            "da 0 a 127. Predefiniti: CC 20–27 sul canale MIDI 13. In "
+            "Ableton si assegnano ai parametri con la MIDI Map."
+        ))
         enable = QCheckBox("ATTIVA CC PER CANALE")
         enable.setChecked(getattr(strategy, "enabled", False))
         enable.toggled.connect(
@@ -360,6 +415,7 @@ class MappingPanel(QWidget):
             band_cb = QComboBox()
             band_cb.addItems(_BANDS + ["broadband"])
             band_cb.setCurrentText(getattr(v, "band", "alpha"))
+            band_cb.setToolTip(_BAND_TIP + "\nbroadband = tutte insieme.")
             band_cb.currentTextChanged.connect(
                 lambda t, vc=v: self._set_safe(vc, "band", t)
             )
@@ -369,10 +425,13 @@ class MappingPanel(QWidget):
             cc_sb = QSpinBox()
             cc_sb.setRange(0, 127)
             cc_sb.setValue(int(getattr(v, "cc_number", 20 + i)))
+            cc_sb.setToolTip(
+                "Il numero del controller che questo elettrodo muove."
+            )
             cc_sb.valueChanged.connect(
                 lambda val, vc=v: self._set_safe(vc, "cc_number", val)
             )
-            grid.addWidget(QLabel("cc#"), 0, 3)
+            grid.addWidget(QLabel("numero CC"), 0, 3)
             grid.addWidget(cc_sb, 0, 4)
 
             midi_sb = QSpinBox()
@@ -386,6 +445,7 @@ class MappingPanel(QWidget):
 
             inv_cb = QCheckBox("inverti")
             inv_cb.setChecked(getattr(v, "invert", False))
+            inv_cb.setToolTip("Al contrario: più banda = valore più basso.")
             inv_cb.toggled.connect(
                 lambda val, vc=v: self._set_safe(vc, "invert", val)
             )
@@ -395,6 +455,7 @@ class MappingPanel(QWidget):
             sm.setRange(0.0, 0.99)
             sm.setSingleStep(0.05)
             sm.setValue(float(getattr(v, "smoothing", 0.7)))
+            sm.setToolTip(_SMOOTH_TIP)
             sm.valueChanged.connect(
                 lambda val, vc=v: self._set_safe(vc, "smoothing", val)
             )
@@ -413,6 +474,19 @@ class MappingPanel(QWidget):
             layout.addRow(QLabel("strategia soglia non presente in questa configurazione."))
             return w
 
+        layout.addRow(_about(
+            "Segue la potenza della banda selezionata, mediata sugli otto "
+            "elettrodi, e invia una nota quando questa supera la soglia. Con "
+            "la soglia adattiva il riferimento è la media degli ultimi 20 "
+            "secondi circa: la soglia relativa indica di quante deviazioni "
+            "tipiche deve salire la banda. Le note si susseguono in ordine "
+            "sulla pentatonica maggiore di Do, due ottave a partire dal Do "
+            "centrale, e la velocity cresce con l'intensità del picco. La "
+            "voce si riarma quando la banda rientra sotto il 60% della "
+            "soglia, e comunque non prima di 0,25 s.\n"
+            "Uscita predefinita: canale MIDI 10. Uso tipico: accenti su uno "
+            "strumento percussivo o un campionatore."
+        ))
         enable = QCheckBox()
         enable.setChecked(getattr(s, "enabled", False))
         enable.toggled.connect(lambda v: self._set_safe(s, "enabled", v))
@@ -421,6 +495,7 @@ class MappingPanel(QWidget):
         band_cb = QComboBox()
         band_cb.addItems(_BANDS)
         band_cb.setCurrentText(getattr(s, "band", "beta"))
+        band_cb.setToolTip(_BAND_TIP)
         band_cb.currentTextChanged.connect(
             lambda t: self._set_safe(s, "band", t)
         )
@@ -434,7 +509,11 @@ class MappingPanel(QWidget):
         thr.setRange(0.0, 10_000.0)
         thr.setValue(float(getattr(s, "threshold_uv2", 80.0)))
         thr.setSuffix(" uV^2")
-        thr.setToolTip("Soglia assoluta: usata solo se 'adattiva' è spenta.")
+        thr.setToolTip(
+            "Soglia assoluta, usata solo se 'adattiva' è spenta. Con le\n"
+            "cuffie vere lasciala adattiva: i valori assoluti cambiano molto\n"
+            "da cuffia a cuffia."
+        )
         thr.valueChanged.connect(
             lambda v: self._set_safe(s, "threshold_uv2", v)
         )
@@ -447,6 +526,7 @@ class MappingPanel(QWidget):
         ch = QSpinBox()
         ch.setRange(1, 16)   # 1-16 like Ableton (stored 0-15)
         ch.setValue(int(getattr(s, "channel", 9)) + 1)
+        ch.setToolTip(_MIDI_CH_TIP)
         ch.valueChanged.connect(lambda v: self._set_safe(s, "channel", v - 1))
         layout.addRow("canale midi", ch)
 
@@ -467,6 +547,20 @@ class MappingPanel(QWidget):
             layout.addRow(QLabel("strategia coerenza non presente in questa configurazione."))
             return w
 
+        layout.addRow(_about(
+            "Misura la coerenza nella banda selezionata, cioè quanto le "
+            "oscillazioni di due gruppi di elettrodi della stessa cuffia "
+            "procedono di pari passo: la metà anteriore contro quella "
+            "posteriore (umano: Fz, C3, Cz, C4 contro Pz, PO7, Oz, PO8; cane: "
+            "Fp, F3, F4, Cz contro T3, T4, O1, O2). Non confronta l'uomo con "
+            "il cane.\n"
+            "Non suona note: invia un controllo continuo, da 0 (gruppi "
+            "indipendenti) a 127 (gruppi allineati). Predefinito: CC 1, la "
+            "rotella di modulazione, sul canale MIDI 11. In Ableton si "
+            "assegna con la MIDI Map a un parametro, per esempio l'apertura "
+            "di un filtro o la mandata di un riverbero; nelle preferenze MIDI "
+            "la porta loopMIDI deve avere attivo Remote."
+        ))
         enable = QCheckBox()
         enable.setChecked(getattr(s, "enabled", False))
         enable.toggled.connect(lambda v: self._set_safe(s, "enabled", v))
@@ -475,6 +569,7 @@ class MappingPanel(QWidget):
         band_cb = QComboBox()
         band_cb.addItems(_BANDS)
         band_cb.setCurrentText(getattr(s, "band", "alpha"))
+        band_cb.setToolTip(_BAND_TIP)
         band_cb.currentTextChanged.connect(
             lambda t: self._set_safe(s, "band", t)
         )
@@ -483,12 +578,18 @@ class MappingPanel(QWidget):
         cc = QSpinBox()
         cc.setRange(0, 127)
         cc.setValue(int(getattr(s, "cc_number", 1)))
+        cc.setToolTip(
+            "Numero del controller inviato. In Ableton: modalità MIDI Map,\n"
+            "clic sul parametro da pilotare; l'assegnazione avviene al primo\n"
+            "valore ricevuto."
+        )
         cc.valueChanged.connect(lambda v: self._set_safe(s, "cc_number", v))
-        layout.addRow("cc #", cc)
+        layout.addRow("numero CC", cc)
 
         ch = QSpinBox()
         ch.setRange(1, 16)   # 1-16 like Ableton (stored 0-15)
         ch.setValue(int(getattr(s, "channel", 10)) + 1)
+        ch.setToolTip(_MIDI_CH_TIP)
         ch.valueChanged.connect(lambda v: self._set_safe(s, "channel", v - 1))
         layout.addRow("canale midi", ch)
 
@@ -496,6 +597,7 @@ class MappingPanel(QWidget):
         sm.setRange(0.0, 0.99)
         sm.setSingleStep(0.05)
         sm.setValue(float(getattr(s, "smoothing", 0.6)))
+        sm.setToolTip(_SMOOTH_TIP)
         sm.valueChanged.connect(lambda v: self._set_safe(s, "smoothing", v))
         layout.addRow("morbidezza", sm)
         return w
@@ -508,6 +610,18 @@ class MappingPanel(QWidget):
             layout.addRow(QLabel("strategia markov non presente in questa configurazione."))
             return w
 
+        layout.addRow(_about(
+            "Genera una linea melodica che non dipende da un singolo "
+            "elettrodo. A ogni passo, uno ogni «intervallo minimo» secondi, "
+            "suona insieme da una fino a «note per frase» note della scala "
+            "selezionata, scelte con un percorso casuale che resta vicino "
+            "alle note precedenti (catena di Markov). L'EEG ne determina il "
+            "carattere: più potenza in beta porta più note e più intense, in "
+            "theta sposta la linea verso il registro grave, in alpha allarga "
+            "gli intervalli. Con la beta molto bassa il passo resta muto.\n"
+            "Predefiniti: modo dorico di Re, canale MIDI 9. Uso tipico: pad "
+            "o strumento armonico."
+        ))
         enable = QCheckBox()
         enable.setChecked(getattr(s, "enabled", True))
         enable.toggled.connect(lambda v: self._set_safe(s, "enabled", v))
@@ -516,6 +630,7 @@ class MappingPanel(QWidget):
         scale_cb = QComboBox()
         scale_cb.addItems(sorted(SCALES.keys()))
         scale_cb.setCurrentText(getattr(s, "scale", "dorian"))
+        scale_cb.setToolTip("Scala da cui la melodia sceglie le note.")
         scale_cb.currentTextChanged.connect(
             lambda t: self._set_safe(s, "scale", t)
         )
@@ -524,6 +639,7 @@ class MappingPanel(QWidget):
         root_cb = QComboBox()
         root_cb.addItems(sorted(NOTE_NAME_TO_PC.keys()))
         root_cb.setCurrentText(getattr(s, "root", "D"))
+        root_cb.setToolTip("Tonica della scala.")
         root_cb.currentTextChanged.connect(
             lambda t: self._set_safe(s, "root", t)
         )
@@ -532,16 +648,22 @@ class MappingPanel(QWidget):
         ch = QSpinBox()
         ch.setRange(1, 16)   # 1-16 like Ableton (stored 0-15)
         ch.setValue(int(getattr(s, "channel", 8)) + 1)
+        ch.setToolTip(_MIDI_CH_TIP)
         ch.valueChanged.connect(lambda v: self._set_safe(s, "channel", v - 1))
         layout.addRow("canale midi", ch)
 
         density = QSpinBox()
         density.setRange(1, 16)
         density.setValue(int(getattr(s, "max_notes_per_window", 1)))
+        density.setToolTip(
+            "Numero massimo di note suonate insieme a ogni passo. Il numero\n"
+            "effettivo dipende dalla potenza in beta: bassa = una nota,\n"
+            "alta = fino a questo valore."
+        )
         density.valueChanged.connect(
             lambda v: self._set_safe(s, "max_notes_per_window", v)
         )
-        layout.addRow("note max/finestra", density)
+        layout.addRow("note per frase (max)", density)
 
         mk_interval = QDoubleSpinBox()
         mk_interval.setRange(0.0, 60.0)
@@ -550,7 +672,8 @@ class MappingPanel(QWidget):
         mk_interval.setSuffix(" s")
         mk_interval.setValue(float(getattr(s, "min_interval_seconds", 2.5)))
         mk_interval.setToolTip(
-            "Secondi minimi fra due frasi Markov. Più alto = più rado."
+            "Secondi tra un passo e il successivo. Valori più alti rendono\n"
+            "la linea più rada."
         )
         mk_interval.valueChanged.connect(
             lambda v: self._set_safe(s, "min_interval_seconds", float(v))
@@ -578,6 +701,21 @@ class MappingPanel(QWidget):
             layout.addWidget(QLabel("strategia clip non presente in questa configurazione."))
             return scroll
 
+        layout.addWidget(_about(
+            "Serve a lanciare clip o scene in Ableton, non a produrre suono. "
+            "Ognuna delle otto regole segue una banda su un singolo elettrodo "
+            "e, quando la potenza supera la soglia (predefinita: tre "
+            "deviazioni tipiche sopra la media recente), invia una nota "
+            "fissa: predefinite 36–43 sul canale MIDI 12. La regola si "
+            "riarma quando la banda rientra, e comunque non prima di mezzo "
+            "secondo.\n"
+            "Assegnazione in Ableton: modalità MIDI Map, clic sulla clip o "
+            "sulla scena, poi attendere il primo invio della regola; nelle "
+            "preferenze MIDI la porta loopMIDI deve avere attivo Remote. A "
+            "differenza di EVENTI, che segue la media di tutti gli elettrodi "
+            "e suona una sequenza di note, ogni regola segue un solo "
+            "elettrodo e invia sempre la stessa nota."
+        ))
         enable = QCheckBox("ATTIVA LANCIA-CLIP")
         enable.setChecked(getattr(s, "enabled", False))
         enable.toggled.connect(lambda v: self._set_safe(s, "enabled", v))
@@ -607,6 +745,7 @@ class MappingPanel(QWidget):
             ch_sb = QSpinBox()
             ch_sb.setRange(0, 7)
             ch_sb.setValue(int(getattr(rule, "eeg_channel", 0)))
+            ch_sb.setToolTip(_ELECTRODES_TIP)
             ch_sb.valueChanged.connect(
                 lambda v, r=rule: self._set_safe(r, "eeg_channel", v)
             )
@@ -616,6 +755,7 @@ class MappingPanel(QWidget):
             band_cb = QComboBox()
             band_cb.addItems(_BANDS)
             band_cb.setCurrentText(getattr(rule, "band", "theta"))
+            band_cb.setToolTip(_BAND_TIP)
             band_cb.currentTextChanged.connect(
                 lambda t, r=rule: self._set_safe(r, "band", t)
             )
@@ -625,6 +765,10 @@ class MappingPanel(QWidget):
             note_sb = QSpinBox()
             note_sb.setRange(0, 127)
             note_sb.setValue(int(getattr(rule, "midi_note", 36 + i)))
+            note_sb.setToolTip(
+                "Nota MIDI inviata dalla regola: in Ableton si assegna a una\n"
+                "clip o a una scena con la MIDI Map."
+            )
             note_sb.valueChanged.connect(
                 lambda v, r=rule: self._set_safe(r, "midi_note", v)
             )
@@ -634,6 +778,7 @@ class MappingPanel(QWidget):
             mc = QSpinBox()
             mc.setRange(1, 16)   # 1-16 like Ableton (stored 0-15)
             mc.setValue(int(getattr(rule, "midi_channel", 11)) + 1)
+            mc.setToolTip(_MIDI_CH_TIP)
             mc.valueChanged.connect(
                 lambda v, r=rule: self._set_safe(r, "midi_channel", v - 1)
             )

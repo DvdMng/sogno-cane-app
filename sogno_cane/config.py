@@ -9,6 +9,9 @@ their ``init=True`` fields, so the volatile runtime state (RNG generators, note
 gates, smoothing buffers — all ``init=False``) is never written. On load the
 values are applied *in place* onto the existing bundle objects, so the running
 engine and the mapping panels pick them up without rebuilding the object graph.
+
+``session.json`` remembers which saved configuration is in use and the working
+state at exit (unsaved changes included), so the app reopens as it was left.
 """
 from __future__ import annotations
 
@@ -139,6 +142,32 @@ def save_config(path: str, config: dict) -> None:
 def load_config(path: str) -> dict:
     with open(path, "r", encoding="utf-8-sig") as f:
         return json.load(f)
+
+
+# --------------------------------------------------------------------------- #
+# Session: the configuration in use, as it was when the app closed            #
+# --------------------------------------------------------------------------- #
+def session_path() -> str:
+    return os.path.join(home_dir(), "session.json")
+
+
+def save_session(config: dict, current_path: str | None) -> None:
+    """Store the working state plus which saved configuration it came from."""
+    data = dict(config)
+    data["current_config"] = current_path or ""
+    save_config(session_path(), data)
+
+
+def load_session() -> tuple[dict | None, str | None]:
+    """``(working_state, current_config_path)``; ``(None, None)`` if none."""
+    try:
+        data = load_config(session_path())
+    except Exception:
+        return None, None
+    if not isinstance(data, dict) or not isinstance(data.get("devices"), dict):
+        return None, None
+    path = str(data.get("current_config") or "") or None
+    return data, path
 
 
 def list_saved_configs() -> list[str]:

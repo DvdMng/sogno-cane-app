@@ -114,10 +114,19 @@ class Archive:
             return rec_id
         trimmed.meta.rec_id = self.new_id()
         trimmed.meta.created = self.now_iso()
+        # A cut is a new, standalone recording: it no longer pairs up with
+        # the other half of a UOMO+CANE session.
+        trimmed.meta.session = ""
         if not new_name:
             trimmed.meta.name = f"{rec.meta.name} (trim)"
         trimmed.save(self.root)
         return trimmed.meta.rec_id
+
+    def session_members(self, session: str) -> list[RecordingMeta]:
+        """The recordings started together under ``session``."""
+        if not session:
+            return []
+        return [m for m in self.list() if m.session == session]
 
     def export_csv(
         self, rec_id: str, dest_path: str, include_time: bool = True

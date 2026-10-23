@@ -3,7 +3,8 @@
 Lists every recording saved to the shared :class:`Archive` and exposes the
 edit operations requested for the archive: rename, cut (trim a start/end
 range), export to CSV, delete, plus "load to HUMAN/DOG" which sends the
-recording back through the live playback engine.
+recording back through the live playback engine, and "load session" which
+plays a UOMO+CANE pair recorded together on both panels at once.
 """
 from __future__ import annotations
 
@@ -48,6 +49,8 @@ class ArchivePanel(QWidget):
     # Emitted when the user asks to play a recording on a device.
     load_to_human = Signal(object)   # LoadedEEG
     load_to_dog = Signal(object)     # LoadedEEG
+    # A UOMO+CANE session: (human LoadedEEG or None, dog LoadedEEG or None).
+    load_session = Signal(object, object)
 
     def __init__(
         self, archive: Archive, parent: QWidget | None = None
@@ -65,8 +68,11 @@ class ArchivePanel(QWidget):
         outer.addWidget(title)
 
         hint = QLabel(
-            "Record from the STUDIO tab (● REC). Select a row to rename, "
-            "trim, export to CSV, delete, or load it back for playback."
+            "Si registra dalla scheda STUDIO: ● REGISTRA su un pannello, "
+            "oppure ● REGISTRA UOMO+CANE per entrambi nello stesso istante "
+            "(le due registrazioni hanno lo stesso nome di sessione). "
+            "Seleziona una riga per rinominarla, tagliarla, esportarla in CSV, "
+            "eliminarla o ricaricarla per riascoltarla."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet(f"color: {TEXT_DIM};")
@@ -74,7 +80,7 @@ class ArchivePanel(QWidget):
 
         self._table = QTableWidget(0, 5)
         self._table.setHorizontalHeaderLabels(
-            ["NAME", "PROFILE", "DURATION", "SOURCE", "CREATED"]
+            ["NOME", "PROFILO", "DURATA", "SORGENTE", "CREATA"]
         )
         self._table.verticalHeader().setVisible(False)
         self._table.setSelectionBehavior(
@@ -109,7 +115,7 @@ class ArchivePanel(QWidget):
         trim_row.addWidget(self._trim_end)
         self._trim_btn = QPushButton("TAGLIA -> NUOVA")
         self._trim_btn.setToolTip(
-            "Save the selected [start, end) range as a new recording."
+            "Salva l'intervallo scelto [da, a) come nuova registrazione."
         )
         self._trim_btn.clicked.connect(self._do_trim)
         trim_row.addWidget(self._trim_btn)
@@ -136,6 +142,13 @@ class ArchivePanel(QWidget):
         self._play_dog_btn = QPushButton("CARICA → CANE")
         self._play_dog_btn.clicked.connect(lambda: self._do_load("DOG"))
         actions.addWidget(self._play_dog_btn)
+        self._play_session_btn = QPushButton("CARICA SESSIONE → UMANO + CANE")
+        self._play_session_btn.setToolTip(
+            "Per le registrazioni fatte con ● REGISTRA UOMO+CANE: carica la\n"
+            "coppia sui due pannelli e la fa partire insieme."
+        )
+        self._play_session_btn.clicked.connect(self._do_load_session)
+        actions.addWidget(self._play_session_btn)
         self._refresh_btn = QPushButton("AGGIORNA")
         self._refresh_btn.clicked.connect(self.refresh)
         actions.addWidget(self._refresh_btn)
@@ -148,6 +161,7 @@ class ArchivePanel(QWidget):
 
     def refresh(self) -> None:
         metas = self._archive.list()
+        self._metas = metas
         self._ids = [m.rec_id for m in metas]
         self._table.setRowCount(len(metas))
         for r, m in enumerate(metas):
@@ -177,6 +191,9 @@ class ArchivePanel(QWidget):
     def _on_selection(self) -> None:
         rec_id = self._selected_id()
         self._set_actions_enabled(rec_id is not None)
+        self._play_session_btn.setEnabled(
+            rec_id is not None and len(self._session_of(rec_id)) >= 2
+        )
         if rec_id is None:
             return
         try:
@@ -196,6 +213,16 @@ class ArchivePanel(QWidget):
             self._trim_btn, self._play_human_btn, self._play_dog_btn,
         ):
             b.setEnabled(on)
+        if not on:
+            self._play_session_btn.setEnabled(False)
+
+    def _session_of(self, rec_id: str) -> list:
+        """The recordings started together with ``rec_id`` (itself too)."""
+        meta = next((m for m in getattr(self, "_metas", [])
+                     if m.rec_id == rec_id), None)
+        if meta is None or not meta.session:
+            return []
+        return [m for m in self._metas if m.session == meta.session]
 
     # ------------------------------------------------------------------ #
     # Actions                                                            #
@@ -207,7 +234,7 @@ class ArchivePanel(QWidget):
             return
         cur = self._archive.load(rec_id).meta.name
         name, ok = QInputDialog.getText(
-            self, "Rename recording", "New name:", text=cur
+            self, "Rinomina registrazione", "Nuovo nome:", text=cur
         )
         if ok and name.strip():
             self._archive.rename(rec_id, name.strip())
@@ -223,7 +250,7 @@ class ArchivePanel(QWidget):
             f"{_safe_filename(meta.name)}.csv",
         )
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export to CSV", default, "CSV files (*.csv)"
+            self, "Esporta in CSV", default, "File CSV (*.csv)"
         )
         if not path:
             return
@@ -232,10 +259,10 @@ class ArchivePanel(QWidget):
         try:
             self._archive.export_csv(rec_id, path)
             QMessageBox.information(
-                self, "Exported", f"Saved CSV:\n{path}"
+                self, "Esportata", f"CSV salvato:\n{path}"
             )
         except Exception as e:
-            QMessageBox.warning(self, "Export failed", str(e))
+            QMessageBox.warning(self, "Esportazione fallita", str(e))
 
     def _do_delete(self) -> None:
         rec_id = self._selected_id()
@@ -243,8 +270,8 @@ class ArchivePanel(QWidget):
             return
         meta = self._archive.load(rec_id).meta
         if QMessageBox.question(
-            self, "Delete recording",
-            f"Delete '{meta.name}'? This cannot be undone.",
+            self, "Elimina registrazione",
+            f"Eliminare «{meta.name}»? Non si può annullare.",
         ) == QMessageBox.StandardButton.Yes:
             self._archive.delete(rec_id)
             self.refresh()
@@ -257,7 +284,8 @@ class ArchivePanel(QWidget):
         end = self._trim_end.value()
         if end <= start:
             QMessageBox.warning(
-                self, "Invalid range", "End must be greater than start."
+                self, "Intervallo non valido",
+                "La fine deve venire dopo l'inizio.",
             )
             return
         try:
@@ -265,7 +293,7 @@ class ArchivePanel(QWidget):
             self.refresh()
             self._select_id(new_id)
         except Exception as e:
-            QMessageBox.warning(self, "Trim failed", str(e))
+            QMessageBox.warning(self, "Taglio fallito", str(e))
 
     def _do_load(self, which: str) -> None:
         rec_id = self._selected_id()
@@ -274,13 +302,38 @@ class ArchivePanel(QWidget):
         try:
             rec = self._archive.load(rec_id)
         except Exception as e:
-            QMessageBox.warning(self, "Load failed", str(e))
+            QMessageBox.warning(self, "Caricamento fallito", str(e))
             return
         loaded = _recording_to_loaded(rec)
         if which == "HUMAN":
             self.load_to_human.emit(loaded)
         else:
             self.load_to_dog.emit(loaded)
+
+    def _do_load_session(self) -> None:
+        """Send both halves of a UOMO+CANE session to their panels."""
+        rec_id = self._selected_id()
+        members = self._session_of(rec_id) if rec_id else []
+        if len(members) < 2:
+            return
+        human = dog = None
+        for meta in members:
+            # The panel it was recorded on decides; the profile is the
+            # fallback for recordings without one.
+            is_dog = (meta.panel.upper() == "CANE" if meta.panel
+                      else meta.profile.upper() == "DOG")
+            try:
+                loaded = _recording_to_loaded(
+                    self._archive.load(meta.rec_id)
+                )
+            except Exception as e:
+                QMessageBox.warning(self, "Caricamento fallito", str(e))
+                return
+            if is_dog and dog is None:
+                dog = loaded
+            elif not is_dog and human is None:
+                human = loaded
+        self.load_session.emit(human, dog)
 
     def _select_id(self, rec_id: str) -> None:
         if rec_id in self._ids:

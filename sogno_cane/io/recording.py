@@ -30,6 +30,11 @@ class RecordingMeta:
     created: str
     source: str = "simulator"
     notes: str = ""
+    # Recordings started together (REGISTRA UOMO+CANE) share a session id;
+    # ``panel`` says which panel (UMANO / CANE) each one was recorded on, so
+    # the pair can be played back together on the right panels.
+    session: str = ""
+    panel: str = ""
 
     @property
     def duration_seconds(self) -> float:
@@ -135,6 +140,8 @@ class Recording:
                 created=m.get("created", ""),
                 source=m.get("source", "simulator"),
                 notes=m.get("notes", ""),
+                session=m.get("session", ""),
+                panel=m.get("panel", ""),
             )
         else:
             meta = RecordingMeta(
@@ -154,11 +161,15 @@ class Recorder:
         sample_rate_hz: float,
         profile: str = "HUMAN",
         source: str = "simulator",
+        session: str = "",
+        panel: str = "",
     ) -> None:
         self.channel_names = list(channel_names)
         self.sample_rate_hz = float(sample_rate_hz)
         self.profile = profile
         self.source = source
+        self.session = session
+        self.panel = panel
         self._chunks: list[np.ndarray] = []
         self._n_samples = 0
 
@@ -206,5 +217,7 @@ class Recorder:
             n_samples=eeg.shape[0],
             created=created,
             source=self.source,
+            session=self.session,
+            panel=self.panel,
         )
         return Recording(eeg=eeg, meta=meta)

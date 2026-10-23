@@ -40,6 +40,18 @@ disattivate) e **binario** a 17 float dell'Unicorn UDP Interface (Hybrid
 Black). Le registrazioni **CSV** e **BDF+** del Recorder si riproducono con
 **FILE**. Guida completa: `portable/EEG_COLLEGAMENTO.txt`.
 
+## Novità della versione 0.9.4
+
+* **Configurazione in uso** indicata in alto, in MAPPATURA e nel titolo,
+  con il segnale delle modifiche non salvate. **SALVA** la sovrascrive
+  direttamente, **SALVA COME…** ne crea una nuova; alla riapertura l'app
+  riparte dalla configurazione in uso.
+* **● REGISTRA UOMO+CANE**: le due registrazioni partono nello stesso
+  istante e in ARCHIVIO si ricaricano insieme con **CARICA SESSIONE**.
+* Le schede **EVENTI, COERENZA, MARKOV, CLIP** (e le altre della MAPPATURA)
+  spiegano che cosa ascolta ogni voce, che cosa invia e come si usa in
+  Ableton.
+
 ## Novità della versione 0.9.3
 
 * **L'EEG dal vivo scorre fluido e senza ritardo che cresce.** La cuffia

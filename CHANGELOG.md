@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.9.4 — configurazione in uso, registrazione UOMO+CANE, voci spiegate
+Richieste dal campo.
+
+- **Configurazione in uso sempre visibile, con salvataggio diretto.** Il
+  nome della configurazione compare nella barra del TRASPORTO, nella scheda
+  MAPPATURA e nel titolo della finestra; un pallino rosa segnala modifiche
+  non salvate. SALVA sovrascrive la configurazione in uso senza chiedere il
+  nome (prima SALVA CONFIG lo chiedeva ogni volta, proponendo "my_config");
+  SALVA COME… ne crea una nuova e chiede conferma prima di sovrascriverne
+  un'altra; CARICA… avvisa se ci sono modifiche non salvate. Alla
+  riapertura l'app riparte dalla configurazione in uso, comprese le
+  modifiche non ancora salvate: prima ripartiva sempre dalle impostazioni
+  predefinite e la mappatura andava ricaricata a mano.
+- **REGISTRA UOMO+CANE.** Avvia le registrazioni dei due pannelli nello
+  stesso istante, dopo aver fatto partire quelli fermi; lo scarto tra le due
+  è al massimo un pacchetto (circa 16 ms con le cuffie). Le registrazioni
+  hanno la stessa ora di inizio e lo stesso nome di sessione; in ARCHIVIO,
+  CARICA SESSIONE → UMANO + CANE le riproduce sui due pannelli insieme. Se
+  qualcosa sta registrando, lo stesso pulsante ferma tutte le
+  registrazioni.
+- **EVENTI, COERENZA, MARKOV e CLIP descritti nell'app.** Ogni scheda della
+  MAPPATURA si apre con una descrizione della voce: che cosa ascolta, quando
+  interviene, che cosa invia (canale e numeri predefiniti) e come si usa in
+  Ableton. Ogni parametro ha un suggerimento al passaggio del mouse; alcune
+  etichette sono più chiare ("note per frase (max)", "numero CC").
+- Scheda ARCHIVIO interamente in italiano.
+- I test non scrivono più nella cartella dati dell'app installata
+  (`~/.sogno_cane`).
+
+Test: +16, **258 totali**.
+
 ## 0.9.3 — l'EEG dal vivo scorre fluido, senza ritardo che cresce
 Segnalazione dal campo: lo scorrimento dei dati in SOGNO_CANE era lento e a
 scatti.

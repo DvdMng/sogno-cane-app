@@ -113,6 +113,7 @@ class DevicePanel(QWidget):
     packet_received = Signal(object)         # UnicornPacket
     event_emitted = Signal(object)           # MappingEvent
     recording_saved = Signal(str)            # rec_id
+    recording_changed = Signal(bool)         # recording started / stopped
     source_finished = Signal()               # non-looping playback ended
 
     def __init__(
@@ -141,6 +142,9 @@ class DevicePanel(QWidget):
         # Recording state.
         self._recorder: Recorder | None = None
         self._recording = False
+        # Set when the recording belongs to a UOMO+CANE session.
+        self._rec_session = ""
+        self._rec_started = ""
         self._last_battery = 100.0
 
         # MIDI health surfaced by the stats timer.
@@ -822,11 +826,32 @@ class DevicePanel(QWidget):
     # Recording                                                           #
     # ------------------------------------------------------------------ #
 
+    @property
+    def is_recording(self) -> bool:
+        return self._recording
+
+    def start_recording(self, session: str = "", started: str = "") -> None:
+        """Start recording; ``session`` pairs it with the other panel's.
+
+        Both halves of a UOMO+CANE session get the same session id and the
+        same start time, which names them and sorts them side by side in
+        the archive.
+        """
+        if self._recording:
+            return
+        self._rec_session = session
+        self._rec_started = started
+        self._start_record()
+
+    def stop_recording(self, save: bool = True) -> None:
+        if self._recording:
+            self._stop_record(save=save)
+
     def _toggle_record(self) -> None:
         if self._recording:
             self._stop_record(save=True)
         else:
-            self._start_record()
+            self.start_recording()
 
     def _start_record(self) -> None:
         if self._live is not None:
@@ -845,12 +870,15 @@ class DevicePanel(QWidget):
             sample_rate_hz=sr,
             profile=self._profile.name,
             source=src,
+            session=self._rec_session,
+            panel=self._title,
         )
         self._recording = True
         self._rec_btn.setText("■ FERMA REG.")
         self._rec_lbl.setText("REG 0.0s")
         if not self.is_streaming:
             self._start_engine()
+        self.recording_changed.emit(True)
 
     def _stop_record(self, save: bool = True) -> None:
         self._recording = False
@@ -858,12 +886,19 @@ class DevicePanel(QWidget):
         rec = self._recorder
         self._recorder = None
         self._rec_lbl.setText("")
+        session, started = self._rec_session, self._rec_started
+        self._rec_session = self._rec_started = ""
+        self.recording_changed.emit(False)
         if not save or rec is None or rec.is_empty():
             return
-        name = f"{self._profile.name} {self._archive.now_iso()}"
-        recording = rec.to_recording(
-            self._archive.new_id(), name, self._archive.now_iso()
-        )
+        if session:
+            # Same start time on both halves: named and sorted as a pair.
+            name = f"Sessione {started} · {self._title}"
+            created = started
+        else:
+            name = f"{self._profile.name} {self._archive.now_iso()}"
+            created = self._archive.now_iso()
+        recording = rec.to_recording(self._archive.new_id(), name, created)
         try:
             rid = self._archive.save(recording)
             self.recording_saved.emit(rid)

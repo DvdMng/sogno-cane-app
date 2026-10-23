@@ -17,7 +17,7 @@ import numpy as np
 from sogno_cane.eeg.bands import BandPowers
 from sogno_cane.midi.context import WindowContext
 from sogno_cane.midi.mapper import MappingEvent
-from sogno_cane.midi.pacing import AdaptiveNorm
+from sogno_cane.midi.pacing import FLAT_LOG_POWER, AdaptiveNorm
 
 
 @dataclass
@@ -55,6 +55,10 @@ class PerChannelCCStrategy:
     _norms: dict[int, AdaptiveNorm] = field(
         default_factory=dict, init=False, repr=False,
     )
+    # Band each AGC range was learnt on.
+    _norm_bands: dict[int, str] = field(
+        default_factory=dict, init=False, repr=False,
+    )
 
     @classmethod
     def default_for_n_channels(
@@ -75,11 +79,16 @@ class PerChannelCCStrategy:
         ]
         return cls(voices=voices)
 
-    def _norm(self, key: int) -> AdaptiveNorm:
+    def _norm(self, key: int, band: str) -> AdaptiveNorm:
         n = self._norms.get(key)
         if n is None:
             n = AdaptiveNorm()
             self._norms[key] = n
+        if self._norm_bands.get(key) != band:
+            # Another band has its own level: the old range would pin the
+            # CC near one end until the AGC caught up.
+            n.reset()
+            self._norm_bands[key] = band
         return n
 
     def on_window(
@@ -113,8 +122,12 @@ class PerChannelCCStrategy:
             p = float(arr[voice.eeg_channel])
 
         log_p = float(np.log10(max(p, 1e-6)))
+        if log_p < FLAT_LOG_POWER:
+            # No signal (lost samples, saturated input): keep the last value
+            # and leave the AGC range as it was.
+            return []
         if voice.adaptive:
-            norm = self._norm(voice.eeg_channel).normalize(log_p)
+            norm = self._norm(voice.eeg_channel, voice.band).normalize(log_p)
         else:
             span = max(voice.log_ceiling - voice.log_floor, 1e-9)
             norm = float(np.clip((log_p - voice.log_floor) / span, 0.0, 1.0))

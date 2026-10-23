@@ -210,10 +210,11 @@ class MappingPanel(QWidget):
 
         layout.addWidget(_about(
             "Ogni elettrodo pilota una voce indipendente: la potenza della "
-            "banda selezionata su quell'elettrodo determina l'altezza della "
-            "nota all'interno della scala. Ogni voce usa un proprio canale "
-            "MIDI (predefiniti 1–8). I parametri di ANDAMENTO regolano la "
-            "frequenza con cui le voci cambiano nota."
+            "banda selezionata su quell'elettrodo, letta rispetto al suo "
+            "andamento recente, determina l'altezza della nota all'interno "
+            "della scala. Ogni voce usa un proprio canale MIDI (predefiniti "
+            "1–8). I parametri di ANDAMENTO regolano la frequenza con cui le "
+            "voci cambiano nota. Senza segnale la voce tace."
         ))
         enable = QCheckBox("ATTIVA NOTE PER CANALE")
         enable.setChecked(getattr(strategy, "enabled", True))
@@ -389,10 +390,11 @@ class MappingPanel(QWidget):
             return scroll
 
         layout.addWidget(_about(
-            "Ogni elettrodo genera un controllo continuo (Control Change) "
-            "proporzionale alla potenza della banda selezionata, con valori "
-            "da 0 a 127. Predefiniti: CC 20–27 sul canale MIDI 13. In "
-            "Ableton si assegnano ai parametri con la MIDI Map."
+            "Ogni elettrodo genera un controllo continuo (Control Change) che "
+            "segue la potenza della banda selezionata, letta rispetto al suo "
+            "andamento recente, con valori da 0 a 127. Predefiniti: CC 20–27 "
+            "sul canale MIDI 13. In Ableton si assegnano ai parametri con la "
+            "MIDI Map. Senza segnale il controllo resta all'ultimo valore."
         ))
         enable = QCheckBox("ATTIVA CC PER CANALE")
         enable.setChecked(getattr(strategy, "enabled", False))
@@ -479,7 +481,10 @@ class MappingPanel(QWidget):
             "elettrodi, e invia una nota quando questa supera la soglia. Con "
             "la soglia adattiva il riferimento è la media degli ultimi 20 "
             "secondi circa: la soglia relativa indica di quante deviazioni "
-            "tipiche deve salire la banda. Le note si susseguono in ordine "
+            "tipiche deve salire la banda. Il riferimento riparte da capo a "
+            "ogni avvio, quando si cambia banda e quando la voce viene "
+            "riattivata; nei primi 2 secondi non scatta nulla. Le note si "
+            "susseguono in ordine "
             "sulla pentatonica maggiore di Do, due ottave a partire dal Do "
             "centrale, e la velocity cresce con l'intensità del picco. La "
             "voce si riarma quando la banda rientra sotto il 60% della "
@@ -550,12 +555,17 @@ class MappingPanel(QWidget):
         layout.addRow(_about(
             "Misura la coerenza nella banda selezionata, cioè quanto le "
             "oscillazioni di due gruppi di elettrodi della stessa cuffia "
-            "procedono di pari passo: la metà anteriore contro quella "
-            "posteriore (umano: Fz, C3, Cz, C4 contro Pz, PO7, Oz, PO8; cane: "
-            "Fp, F3, F4, Cz contro T3, T4, O1, O2). Non confronta l'uomo con "
-            "il cane.\n"
+            "procedono di pari passo negli ultimi 4 secondi: la metà "
+            "anteriore contro quella posteriore (umano: Fz, C3, Cz, C4 contro "
+            "Pz, PO7, Oz, PO8; cane: Fp, F3, F4, Cz contro T3, T4, O1, O2). "
+            "Non confronta l'uomo con il cane.\n"
             "Non suona note: invia un controllo continuo, da 0 (gruppi "
-            "indipendenti) a 127 (gruppi allineati). Predefinito: CC 1, la "
+            "indipendenti) a 127 (gruppi allineati). Con una cuffia vera il "
+            "valore non scende a 0 nemmeno a riposo, perché tutti gli "
+            "elettrodi condividono lo stesso elettrodo di riferimento: sulle "
+            "registrazioni di prova resta fra 30 e 60 circa, in gamma fra 60 "
+            "e 80. Conta come si muove rispetto a quel livello.\n"
+            "Predefinito: CC 1, la "
             "rotella di modulazione, sul canale MIDI 11. In Ableton si "
             "assegna con la MIDI Map a un parametro, per esempio l'apertura "
             "di un filtro o la mandata di un riverbero; nelle preferenze MIDI "
@@ -597,7 +607,12 @@ class MappingPanel(QWidget):
         sm.setRange(0.0, 0.99)
         sm.setSingleStep(0.05)
         sm.setValue(float(getattr(s, "smoothing", 0.6)))
-        sm.setToolTip(_SMOOTH_TIP)
+        sm.setToolTip(
+            "Quanto lisciare il valore prima di mandarlo. La coerenza è già\n"
+            "una misura sugli ultimi 4 secondi e scende comunque con\n"
+            "gradualità: la morbidezza rallenta soprattutto le salite\n"
+            "(0 = immediate, 0,95 = circa 2 secondi)."
+        )
         sm.valueChanged.connect(lambda v: self._set_safe(s, "smoothing", v))
         layout.addRow("morbidezza", sm)
         return w
@@ -616,9 +631,12 @@ class MappingPanel(QWidget):
             "suona insieme da una fino a «note per frase» note della scala "
             "selezionata, scelte con un percorso casuale che resta vicino "
             "alle note precedenti (catena di Markov). L'EEG ne determina il "
-            "carattere: più potenza in beta porta più note e più intense, in "
-            "theta sposta la linea verso il registro grave, in alpha allarga "
-            "gli intervalli. Con la beta molto bassa il passo resta muto.\n"
+            "carattere: ogni banda, mediata sugli otto elettrodi e sugli "
+            "ultimi secondi, è confrontata con i suoi valori degli ultimi tre "
+            "minuti. Quando la beta è alta rispetto a quei valori il passo "
+            "ha più note e più intense, quando lo è la theta la linea scende "
+            "verso il registro grave, quando lo è l'alpha gli intervalli si "
+            "allargano. Senza segnale il passo resta muto.\n"
             "Predefiniti: modo dorico di Re, canale MIDI 9. Uso tipico: pad "
             "o strumento armonico."
         ))
@@ -657,8 +675,8 @@ class MappingPanel(QWidget):
         density.setValue(int(getattr(s, "max_notes_per_window", 1)))
         density.setToolTip(
             "Numero massimo di note suonate insieme a ogni passo. Il numero\n"
-            "effettivo dipende dalla potenza in beta: bassa = una nota,\n"
-            "alta = fino a questo valore."
+            "effettivo dipende da quanto è alta la beta rispetto agli ultimi\n"
+            "tre minuti: ai minimi una nota, ai massimi fino a questo valore."
         )
         density.valueChanged.connect(
             lambda v: self._set_safe(s, "max_notes_per_window", v)
@@ -708,7 +726,9 @@ class MappingPanel(QWidget):
             "deviazioni tipiche sopra la media recente), invia una nota "
             "fissa: predefinite 36–43 sul canale MIDI 12. La regola si "
             "riarma quando la banda rientra, e comunque non prima di mezzo "
-            "secondo.\n"
+            "secondo. Il suo riferimento riparte da capo a ogni avvio, "
+            "quando se ne cambia elettrodo o banda e quando la voce viene "
+            "riattivata; nei primi 2 secondi la regola non scatta.\n"
             "Assegnazione in Ableton: modalità MIDI Map, clic sulla clip o "
             "sulla scena, poi attendere il primo invio della regola; nelle "
             "preferenze MIDI la porta loopMIDI deve avere attivo Remote. A "

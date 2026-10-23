@@ -126,7 +126,8 @@ COSE UTILI DA SAPERE
 - Se il Bluetooth perde qualche campione (VALID = 0) SOGNO_CANE tiene
   l'ultimo valore buono invece di "saltare": niente esplosioni di note.
 - Se il segnale si interrompe, SOGNO_CANE NON si ferma: resta in ascolto e
-  riprende da solo appena i dati tornano.
+  riprende da solo appena i dati tornano. Mentre il segnale manca le voci
+  tacciono; al ritorno riprendono normalmente.
 - Le registrazioni del Recorder (CSV o BDF) si riascoltano con FILE e
   passano nello stesso identico motore musicale.
 - Le voci EVENTI e CLIP ora scattano in modo "adattivo": quando la banda

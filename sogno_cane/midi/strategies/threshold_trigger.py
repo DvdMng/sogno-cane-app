@@ -50,6 +50,9 @@ class ThresholdTriggerStrategy:
 
     _is_active: bool = field(default=False, init=False, repr=False)
     _active_note: int | None = field(default=None, init=False, repr=False)
+    # MIDI channel the active note went out on: its note_off must follow it
+    # there even if the channel is changed while the note is held.
+    _active_channel: int = field(default=0, init=False, repr=False)
     # True if the active note was gated (engine owns its release).
     _gated_last: bool = field(default=False, init=False, repr=False)
     _cycle_index: int = field(default=0, init=False, repr=False)
@@ -61,6 +64,8 @@ class ThresholdTriggerStrategy:
     _burst: BurstDetector = field(
         default_factory=BurstDetector, init=False, repr=False,
     )
+    # Band and electrodes the detector's baseline was learnt on.
+    _burst_key: tuple | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.seed is not None:
@@ -107,12 +112,21 @@ class ThresholdTriggerStrategy:
 
         events: list[MappingEvent] = []
         t = ctx.t_seconds
+        key = (self.band, None if self.channels is None
+               else tuple(self.channels))
+        if key != self._burst_key:
+            # Another band (or electrode set) has its own level: measured
+            # against the old baseline it fired at once or stayed mute for
+            # up to ~35 s.
+            self._burst.reset()
+            self._burst_key = key
+        # Score against the signal's own past so "above threshold" means
+        # "unusually high for this signal", on any amplifier. Learnt in
+        # fixed mode too, so switching back to adaptive needs no warm-up.
+        z = self._burst.score(
+            float(np.log10(max(mean_pow, 1e-6))), ctx.hop_seconds,
+        )
         if self.adaptive:
-            # Score against the signal's own past so "above threshold"
-            # means "unusually high for this signal", on any amplifier.
-            z = self._burst.score(
-                float(np.log10(max(mean_pow, 1e-6))), ctx.hop_seconds,
-            )
             thr = max(0.0, self.relative_threshold)
             above = z >= thr
             below = z <= thr * self.release_ratio
@@ -152,6 +166,7 @@ class ThresholdTriggerStrategy:
                 duration=gate_len,
             ))
             self._active_note = note
+            self._active_channel = self.channel
             self._gated_last = gate_len > 0.0
             self._is_active = True
             self._last_trigger_t = t
@@ -160,7 +175,7 @@ class ThresholdTriggerStrategy:
             if self._active_note is not None and not self._gated_last:
                 events.append(MappingEvent(
                     kind="note_off",
-                    channel=self.channel,
+                    channel=self._active_channel,
                     note=self._active_note,
                 ))
             self._active_note = None
@@ -190,12 +205,15 @@ class ThresholdTriggerStrategy:
         """Forget per-run state so a fresh engine clock starts clean.
 
         ``_cycle_index`` survives on purpose: continuing the note sequence
-        across a stop/start is musically nicer than restarting it.
+        across a stop/start is musically nicer than restarting it. The
+        baseline does not: a new engine may read another source, whose
+        level has nothing to do with the old one.
         """
         self._is_active = False
         self._active_note = None
         self._gated_last = False
         self._last_trigger_t = -1.0e9
+        self._burst.reset()
 
     def shutdown(self) -> list[MappingEvent]:
         if self._active_note is None:
@@ -203,7 +221,8 @@ class ThresholdTriggerStrategy:
         events: list[MappingEvent] = []
         if not self._gated_last:
             events.append(MappingEvent(
-                kind="note_off", channel=self.channel, note=self._active_note,
+                kind="note_off", channel=self._active_channel,
+                note=self._active_note,
             ))
         self._active_note = None
         self._gated_last = False

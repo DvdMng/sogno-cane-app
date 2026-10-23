@@ -26,6 +26,10 @@ import numpy as np
 from sogno_cane.eeg.bands import BandPowers, compute_band_powers
 from sogno_cane.midi.context import WindowContext
 
+# Share of bridged (lost) samples above which a window is not analysed,
+# unless it is lost entirely (see process_packet).
+_LOST_EDGE = 0.1
+
 
 # ---------------------------------------------------------------------- #
 # Events                                                                 #
@@ -125,6 +129,8 @@ class MappingEngine:
         self._config = config
         self._strategies: list[MappingStrategy] = []
         self._buffer: deque[np.ndarray] = deque()
+        # Lost-sample flags, one array per buffered packet.
+        self._lost: deque[np.ndarray] = deque()
         self._buffered_samples: int = 0
         self._samples_since_last_window: int = 0
         # Deterministic simulation clock (seconds), advanced by sample count.
@@ -135,6 +141,10 @@ class MappingEngine:
         # Last sample flagged valid, used to bridge samples the hardware
         # marks as lost (VALID = 0).
         self._last_good: Optional[np.ndarray] = None
+        # Whether each strategy was enabled at its last evaluation, so that
+        # switching one off mid-run releases the notes it still holds, and
+        # switching it back on starts it afresh.
+        self._was_enabled: dict[int, bool] = {}
 
     @property
     def config(self) -> MappingConfig:
@@ -155,9 +165,11 @@ class MappingEngine:
     def remove_strategy(self, strategy: MappingStrategy) -> None:
         self._strategies.remove(strategy)
         self._accepts_ctx.pop(id(strategy), None)
+        self._was_enabled.pop(id(strategy), None)
 
     def clear_buffer(self) -> None:
         self._buffer.clear()
+        self._lost.clear()
         self._buffered_samples = 0
         self._samples_since_last_window = 0
 
@@ -198,7 +210,20 @@ class MappingEngine:
     # Core                                                                #
     # ------------------------------------------------------------------ #
 
-    def _bridge_lost_samples(self, packet, eeg: np.ndarray) -> np.ndarray:
+    @staticmethod
+    def _lost_mask(packet, n: int) -> np.ndarray:
+        """Samples flagged lost (VALID = 0); none if the packet cannot say."""
+        try:
+            valid = np.asarray(packet.validation)
+        except Exception:
+            return np.zeros(n, dtype=bool)
+        if valid.shape[0] != n:
+            return np.zeros(n, dtype=bool)
+        return valid < 0.5
+
+    def _bridge_lost_samples(
+        self, eeg: np.ndarray, bad: np.ndarray,
+    ) -> np.ndarray:
         """Hold the last valid sample across samples flagged as lost.
 
         A Unicorn marks samples hit by Bluetooth data loss with VALID = 0.
@@ -208,15 +233,9 @@ class MappingEngine:
         would fire together. Sample-and-hold turns a dropout into a flat
         line instead: honest silence, no explosion.
         """
-        try:
-            valid = np.asarray(packet.validation)
-        except Exception:
-            return eeg
-        if valid.shape[0] != eeg.shape[0]:
-            return eeg
-        bad = valid < 0.5
         if not bad.any():
-            self._last_good = eeg[-1].copy()
+            if eeg.shape[0]:
+                self._last_good = eeg[-1].copy()
             return eeg
         out = eeg.copy()
         last = self._last_good
@@ -233,9 +252,11 @@ class MappingEngine:
     def process_packet(self, packet) -> list[MappingEvent]:
         """Push a packet through the engine; return triggered MIDI events."""
         eeg = packet.eeg.astype(np.float64, copy=False)
-        eeg = self._bridge_lost_samples(packet, eeg)
         n = eeg.shape[0]
+        lost = self._lost_mask(packet, n)
+        eeg = self._bridge_lost_samples(eeg, lost)
         self._buffer.append(eeg)
+        self._lost.append(lost)
         self._buffered_samples += n
         self._samples_since_last_window += n
         self._total_samples += n
@@ -250,6 +271,7 @@ class MappingEngine:
             and self._buffered_samples - self._buffer[0].shape[0] >= win
         ):
             popped = self._buffer.popleft()
+            self._lost.popleft()
             self._buffered_samples -= popped.shape[0]
 
         events: list[MappingEvent] = []
@@ -266,20 +288,51 @@ class MappingEngine:
         self._samples_since_last_window %= hop
 
         eeg_window = self._tail(win)
+        mains_hz = getattr(self._config, "mains_hz", 50.0)
         bands = compute_band_powers(
             eeg_window,
             self._config.sample_rate_hz,
-            mains_hz=getattr(self._config, "mains_hz", 50.0),
+            mains_hz=mains_hz,
         )
         ctx = WindowContext(
             t_seconds=self._t_seconds,
             hop_seconds=self._config.hop_seconds,
             sample_rate_hz=self._config.sample_rate_hz,
             window_samples=win,
+            mains_hz=mains_hz,
         )
+        # Part bridge, part live signal: the edges of a loss (the hold
+        # starting, the step back to the live signal), not EEG. Analysed,
+        # a 3 s loss gave two spurious events and half the event rate for
+        # the next 30 s (measured). A window lost entirely is a flat line
+        # instead, which every voice reads as no signal: silence, held
+        # notes released, references untouched.
+        lost_n = int(np.count_nonzero(np.concatenate(self._lost)[-win:]))
+        edge_of_loss = _LOST_EDGE * win < lost_n < win
 
         for s in self._strategies:
             if not getattr(s, "enabled", True):
+                # Switched off while playing: release what it still holds,
+                # once. A held (HOLD / legato) note would otherwise sound
+                # until PANIC.
+                if self._was_enabled.get(id(s), True):
+                    try:
+                        events.extend(s.shutdown())
+                    except Exception:
+                        pass
+                self._was_enabled[id(s)] = False
+                continue
+            if not self._was_enabled.get(id(s), True):
+                # Switched back on: start as at START, not from the state
+                # (baselines, ranges) frozen when it was switched off.
+                reset = getattr(s, "reset_runtime", None)
+                if reset is not None:
+                    try:
+                        reset()
+                    except Exception:
+                        pass
+            self._was_enabled[id(s)] = True
+            if edge_of_loss:
                 continue
             try:
                 if self._accepts_ctx.get(id(s), True):

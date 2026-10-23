@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.9.5 — le voci della MAPPATURA verificate caso per caso
+Verifica di ogni comando descritto nella MAPPATURA sul motore dell'app, con
+le registrazioni ufficiali della BCI Core-8, il simulatore umano e cane e
+segnali sintetici costruiti per ciascun caso: modifiche dal vivo, cambio di
+sorgente, campioni persi. Correzioni:
+
+- **Note che restavano accese.** In HOLD (legato) una nota rimaneva tenuta
+  sul synth se, mentre suonava, si cambiava il canale MIDI della voce o la
+  si disattivava (EVENTI, MARKOV, NOTE PER CANALE; CLIP se spento subito
+  dopo un lancio): il note-off partiva sul canale nuovo, o non partiva.
+  Ora ogni nota si chiude sul canale da cui è partita, e una voce spenta
+  chiude subito quello che sta suonando.
+- **EVENTI e CLIP dopo un cambio di banda, di elettrodo o di sorgente.** Il
+  riferimento adattivo restava quello precedente: un evento spurio subito,
+  oppure fino a ~35 s quasi senza eventi. Ora il riferimento riparte da
+  capo e dopo 2 s la voce lavora come all'avvio; lo stesso quando si
+  riattiva una voce spenta.
+- **NOTE e CC PER CANALE dopo un cambio di banda.** La nuova banda veniva
+  letta sulla scala di valori della precedente: per 15–30 s note più basse
+  e CC molto bassi. Ora la scala si ricalibra subito.
+- **Perdita di segnale.** Quando la cuffia smette di trasmettere, i campioni
+  mancanti restano fermi all'ultimo valore, e quella linea piatta entrava
+  nei riferimenti adattivi: dopo 3 s di perdita EVENTI taceva per circa un
+  minuto, CLIP per due, le note per canale restavano spostate per 30–60 s.
+  Ora la linea piatta vale come assenza di segnale (le voci tacciono, i CC
+  restano fermi) e le finestre a cavallo dell'interruzione non vengono
+  analizzate: finita la perdita, gli eventi riprendono come se non ci fosse
+  stata.
+- **COERENZA ricalcolata.** La misura su 1 s, in segmenti da 0,25 s, in
+  delta valeva sempre 0; un ritmo comune a 6 Hz compariva anche in alpha
+  (117); segnali indipendenti davano circa 18, e il ronzio di rete veniva
+  letto come coerenza in gamma (85). Ora la coerenza è calcolata sugli
+  ultimi 4 secondi con risoluzione di 1 Hz, il ronzio è escluso e il valore
+  di fondo è corretto: segnali indipendenti danno 0–1, un ritmo comune
+  120–127 solo nella sua banda. La prima lettura arriva 4 s dopo l'avvio.
+- **MARKOV legge l'EEG in modo relativo.** Sulle registrazioni vere la beta
+  restava fra 0,37 e 0,52 della sua scala fissa: quasi sempre due note per
+  passo, velocity fra 70 e 80, mai il massimo di note. Ora ogni banda,
+  mediata sugli ultimi secondi, è confrontata con i propri valori degli
+  ultimi tre minuti: passi da una a quattro note, velocity da 40 a 120, un
+  cambiamento che dura minuti resta leggibile e un artefatto di movimento
+  non altera le frasi successive.
+- Descrizioni della MAPPATURA aggiornate di conseguenza.
+
+Verificati senza modifiche: soglia relativa di EVENTI e CLIP, scelta della
+banda, scala, tonica, intervallo e canale di MARKOV, morbidezza, durata
+delle note, escursione dei CC per canale.
+
+Test: +22, **280 totali**.
+
 ## 0.9.4 — configurazione in uso, registrazione UOMO+CANE, voci spiegate
 Richieste dal campo.
 

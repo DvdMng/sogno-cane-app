@@ -20,6 +20,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
+# Band power (log10 uV^2) below which a channel carries no signal at all: a
+# flat line, as when lost samples are held at their last value or an input
+# is saturated (it computes as 0, logged as -6). The official BCI Core
+# recordings never go below ~10^-1.5 uV^2 in any band on any electrode.
+# Fed to the adaptive references, a 3 s loss stretched them so far that the
+# event voices stayed mute for one to two minutes (measured).
+FLAT_LOG_POWER = -4.0
+
 
 # --------------------------------------------------------------------------- #
 # Adaptive normalisation (AGC)                                                 #
@@ -110,7 +118,12 @@ class BurstDetector:
         EMA rate), and nothing fires during a short warm-up. Without this a
         guessed initial deviation made events fire ~3x too often for the
         first ~20 s of every session (measured on real recordings).
+
+        A flat line (``x`` below :data:`FLAT_LOG_POWER`) is neither an event
+        nor something to learn from.
         """
+        if x < FLAT_LOG_POWER:
+            return 0.0
         if self._mean is None or self._dev is None:
             self._mean = x
             self._dev = 0.0

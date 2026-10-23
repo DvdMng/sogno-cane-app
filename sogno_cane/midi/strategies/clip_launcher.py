@@ -58,12 +58,23 @@ class ClipLauncherStrategy:
     _bursts: dict[int, BurstDetector] = field(
         default_factory=dict, init=False, repr=False,
     )
+    # (electrode, band) each rule's baseline was learnt on.
+    _burst_keys: dict[int, tuple[int, str]] = field(
+        default_factory=dict, init=False, repr=False,
+    )
 
-    def _burst(self, idx: int) -> BurstDetector:
+    def _burst(self, idx: int, rule: ClipRule) -> BurstDetector:
         b = self._bursts.get(idx)
         if b is None:
             b = BurstDetector()
             self._bursts[idx] = b
+        key = (rule.eeg_channel, rule.band)
+        if self._burst_keys.get(idx) != key:
+            # Another electrode or band has its own level: measured against
+            # the old baseline it fired at once or stayed mute for up to
+            # ~35 s.
+            b.reset()
+            self._burst_keys[idx] = key
         return b
 
     def on_window(
@@ -83,8 +94,6 @@ class ClipLauncherStrategy:
         self._held.clear()
 
         for idx, rule in enumerate(self.rules):
-            if not rule.enabled:
-                continue
             try:
                 arr = bands.by_band[rule.band]
             except KeyError:
@@ -92,6 +101,13 @@ class ClipLauncherStrategy:
             if not 0 <= rule.eeg_channel < arr.shape[0]:
                 continue
             power = float(arr[rule.eeg_channel])
+            # Learnt even while the rule is off or in fixed mode, so that
+            # switching either back needs no warm-up.
+            z = self._burst(idx, rule).score(
+                float(np.log10(max(power, 1e-6))), ctx.hop_seconds,
+            )
+            if not rule.enabled:
+                continue
 
             last_fire = self._last_fire_t.get(idx, -1.0e9)
             if last_fire > t:
@@ -103,9 +119,6 @@ class ClipLauncherStrategy:
             armed = self._armed.get(idx, True)
 
             if self.adaptive:
-                z = self._burst(idx).score(
-                    float(np.log10(max(power, 1e-6))), ctx.hop_seconds,
-                )
                 thr = max(0.0, self.relative_threshold)
                 above = z >= thr
                 rearm = z <= thr * rule.release_ratio
@@ -128,10 +141,16 @@ class ClipLauncherStrategy:
         return events
 
     def reset_runtime(self) -> None:
-        """Forget per-run state so a fresh engine clock starts clean."""
+        """Forget per-run state so a fresh engine clock starts clean.
+
+        The baselines go too: a new engine may read another source, whose
+        level has nothing to do with the old one.
+        """
         self._armed.clear()
         self._last_fire_t.clear()
         self._held.clear()
+        self._bursts.clear()
+        self._burst_keys.clear()
 
     def shutdown(self) -> list[MappingEvent]:
         events = [

@@ -21,7 +21,7 @@ import numpy as np
 from sogno_cane.eeg.bands import BandPowers
 from sogno_cane.midi.context import WindowContext
 from sogno_cane.midi.mapper import MappingEvent
-from sogno_cane.midi.pacing import AdaptiveNorm, NoteGate
+from sogno_cane.midi.pacing import FLAT_LOG_POWER, AdaptiveNorm, NoteGate
 from sogno_cane.midi.scales import (
     MidiNoteRange,
     build_scale,
@@ -81,6 +81,11 @@ class PerChannelBandStrategy:
     _last_notes: dict[int, int] = field(
         default_factory=dict, init=False, repr=False,
     )
+    # MIDI channel each remembered note went out on: its note_off must go
+    # there even if the voice's channel is changed while the note sounds.
+    _last_channels: dict[int, int] = field(
+        default_factory=dict, init=False, repr=False,
+    )
     # True if the voice's last note_on was gated (carried a duration): the
     # engine owns its release, so the strategy must not emit a second
     # note_off for it.
@@ -91,6 +96,10 @@ class PerChannelBandStrategy:
         default_factory=dict, init=False, repr=False,
     )
     _norms: dict[int, AdaptiveNorm] = field(
+        default_factory=dict, init=False, repr=False,
+    )
+    # Band each AGC range was learnt on.
+    _norm_bands: dict[int, str] = field(
         default_factory=dict, init=False, repr=False,
     )
 
@@ -125,12 +134,29 @@ class PerChannelBandStrategy:
             self._gates[key] = g
         return g
 
-    def _norm(self, key: int) -> AdaptiveNorm:
+    def _norm(self, key: int, band: str) -> AdaptiveNorm:
         n = self._norms.get(key)
         if n is None:
             n = AdaptiveNorm()
             self._norms[key] = n
+        if self._norm_bands.get(key) != band:
+            # Another band has its own level: the old range would squeeze
+            # it into a few notes until the AGC caught up.
+            n.reset()
+            self._norm_bands[key] = band
         return n
+
+    def _release(self, key: int, fallback_channel: int) -> list[MappingEvent]:
+        """Forget a voice's note; a held (legato) one gets its note_off."""
+        note = self._last_notes.pop(key, None)
+        gated = self._gated.pop(key, False)
+        channel = self._last_channels.pop(key, fallback_channel)
+        g = self._gates.get(key)
+        if g is not None:
+            g.commit_off()
+        if note is None or gated:
+            return []
+        return [MappingEvent(kind="note_off", channel=channel, note=note)]
 
     def on_window(
         self,
@@ -141,6 +167,12 @@ class PerChannelBandStrategy:
         events: list[MappingEvent] = []
         for voice in self.voices:
             if not voice.enabled:
+                # Switched off while holding a legato note: release it, or
+                # it sounds until PANIC.
+                if voice.eeg_channel in self._last_notes:
+                    events.extend(
+                        self._release(voice.eeg_channel, voice.midi_channel)
+                    )
                 continue
             events.extend(self._emit_for_voice(voice, bands, ctx))
         return events
@@ -157,8 +189,12 @@ class PerChannelBandStrategy:
         power = float(band_power[voice.eeg_channel])
         log_p = float(np.log10(max(power, 1e-6)))
 
-        if voice.adaptive:
-            norm = self._norm(voice.eeg_channel).normalize(log_p)
+        if log_p < FLAT_LOG_POWER:
+            # No signal (lost samples, saturated input): silence, and the
+            # AGC range is left as it was.
+            norm = 0.0
+        elif voice.adaptive:
+            norm = self._norm(voice.eeg_channel, voice.band).normalize(log_p)
         else:
             span = max(voice.log_ceiling - voice.log_floor, 1e-9)
             norm = float(
@@ -170,8 +206,10 @@ class PerChannelBandStrategy:
             return []
 
         events: list[MappingEvent] = []
-        gate = self._gate(voice.eeg_channel)
-        prev_note = self._last_notes.get(voice.eeg_channel)
+        key = voice.eeg_channel
+        gate = self._gate(key)
+        prev_note = self._last_notes.get(key)
+        prev_channel = self._last_channels.get(key, voice.midi_channel)
         t = ctx.t_seconds
 
         # Near-silence: release the held note (subject to min hold).
@@ -179,15 +217,7 @@ class PerChannelBandStrategy:
             if prev_note is not None and gate.may_release(
                 t, min_hold=voice.min_duration_seconds
             ):
-                if not self._gated.get(voice.eeg_channel):
-                    events.append(MappingEvent(
-                        kind="note_off",
-                        channel=voice.midi_channel,
-                        note=prev_note,
-                    ))
-                self._last_notes.pop(voice.eeg_channel, None)
-                self._gated.pop(voice.eeg_channel, None)
-                gate.commit_off()
+                events.extend(self._release(key, voice.midi_channel))
             return events
 
         new_note = quantize_to_scale(norm, scale_notes)
@@ -219,12 +249,10 @@ class PerChannelBandStrategy:
             if not allowed:
                 return events
             gate_len = max(0.0, voice.note_length_seconds)
-            if prev_note is not None and not self._gated.get(
-                voice.eeg_channel
-            ):
+            if prev_note is not None and not self._gated.get(key):
                 events.append(MappingEvent(
                     kind="note_off",
-                    channel=voice.midi_channel,
+                    channel=prev_channel,
                     note=prev_note,
                 ))
             events.append(MappingEvent(
@@ -234,8 +262,9 @@ class PerChannelBandStrategy:
                 velocity=velocity,
                 duration=gate_len,
             ))
-            self._last_notes[voice.eeg_channel] = new_note
-            self._gated[voice.eeg_channel] = gate_len > 0.0
+            self._last_notes[key] = new_note
+            self._last_channels[key] = voice.midi_channel
+            self._gated[key] = gate_len > 0.0
             gate.commit_on(t, norm)
         else:
             # Retrigger mode, but still rate-limited.
@@ -246,12 +275,10 @@ class PerChannelBandStrategy:
             ):
                 return events
             gate_len = max(0.0, voice.note_length_seconds)
-            if prev_note is not None and not self._gated.get(
-                voice.eeg_channel
-            ):
+            if prev_note is not None and not self._gated.get(key):
                 events.append(MappingEvent(
                     kind="note_off",
-                    channel=voice.midi_channel,
+                    channel=prev_channel,
                     note=prev_note,
                 ))
             events.append(MappingEvent(
@@ -261,8 +288,9 @@ class PerChannelBandStrategy:
                 velocity=velocity,
                 duration=gate_len,
             ))
-            self._last_notes[voice.eeg_channel] = new_note
-            self._gated[voice.eeg_channel] = gate_len > 0.0
+            self._last_notes[key] = new_note
+            self._last_channels[key] = voice.midi_channel
+            self._gated[key] = gate_len > 0.0
             gate.commit_on(t, norm)
         return events
 
@@ -276,22 +304,16 @@ class PerChannelBandStrategy:
         change across a stop/start.
         """
         self._last_notes.clear()
+        self._last_channels.clear()
         self._gated.clear()
         for g in self._gates.values():
             g.reset()
 
     def shutdown(self) -> list[MappingEvent]:
         events: list[MappingEvent] = []
-        for voice in self.voices:
-            note = self._last_notes.pop(voice.eeg_channel, None)
-            gated = self._gated.pop(voice.eeg_channel, False)
-            if note is not None and not gated:
-                events.append(MappingEvent(
-                    kind="note_off",
-                    channel=voice.midi_channel,
-                    note=note,
-                ))
-            g = self._gates.get(voice.eeg_channel)
-            if g is not None:
-                g.commit_off()
+        fallback = {v.eeg_channel: v.midi_channel for v in self.voices}
+        for key in list(self._last_notes):
+            events.extend(self._release(key, fallback.get(key, 0)))
+        for g in self._gates.values():
+            g.commit_off()
         return events

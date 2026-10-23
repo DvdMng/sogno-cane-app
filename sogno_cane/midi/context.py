@@ -26,9 +26,13 @@ class WindowContext:
         EEG sampling rate the window was computed at.
     window_samples
         Number of samples in the analysis window.
+    mains_hz
+        Power-line frequency the band powers exclude (0 = none), for
+        strategies that run their own spectral analysis.
     """
 
     t_seconds: float
     hop_seconds: float
     sample_rate_hz: int
     window_samples: int
+    mains_hz: float = 50.0

@@ -40,6 +40,20 @@ disattivate) e **binario** a 17 float dell'Unicorn UDP Interface (Hybrid
 Black). Le registrazioni **CSV** e **BDF+** del Recorder si riproducono con
 **FILE**. Guida completa: `portable/EEG_COLLEGAMENTO.txt`.
 
+## Novità della versione 0.9.5
+
+* **Nessuna nota resta accesa** cambiando il canale MIDI di una voce o
+  spegnendola mentre suona.
+* **EVENTI e CLIP** ripartono da capo dopo un cambio di banda, di elettrodo
+  o di sorgente; **NOTE e CC per canale** si ricalibrano subito sulla nuova
+  banda.
+* **Perdite di segnale**: le voci tacciono finché il segnale manca e poi
+  riprendono normalmente (prima EVENTI restava muto per circa un minuto).
+* **COERENZA** ricalcolata sugli ultimi 4 secondi: 0 per gruppi
+  indipendenti, ronzio di rete escluso, delta finalmente misurata.
+* **MARKOV** confronta ogni banda con i suoi ultimi tre minuti: il carattere
+  della linea segue davvero l'EEG.
+
 ## Novità della versione 0.9.4
 
 * **Configurazione in uso** indicata in alto, in MAPPATURA e nel titolo,

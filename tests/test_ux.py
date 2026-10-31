@@ -124,6 +124,8 @@ def test_cancelled_file_choice_leaves_mode_truthful(app, tmp_path, monkeypatch):
 def test_loop_checkbox_only_enabled_for_files(app, tmp_path):
     panel = _panel(tmp_path)
     try:
+        # From the start too: the simulator runs, «ripeti» shows as off.
+        assert not panel._loop_cb.isEnabled()
         panel._sync_mode_buttons()
         assert not panel._loop_cb.isEnabled(), "loop is meaningless live"
     finally:

@@ -281,6 +281,24 @@ _CHILD = textwrap.dedent(r'''
     bare = frame(scene, t)
     lg._SINK = sink
     assert (bare.sum(axis=2) > 60).sum() > (later.sum(axis=2) > 60).sum()
+    # REGOLAZIONI: contrast brightens the lines, thickness widens them, the
+    # fabric goes from nothing (only the waves) to twice as present.
+    def lit(img):
+        return int((img.sum(axis=2) > 60).sum())
+    style = scene.style
+    look = frame(scene, t)
+    style.contrast = 2.0
+    assert frame(scene, t).sum() > 1.2 * look.sum()
+    style.contrast = 1.0
+    style.thickness = 3.0
+    assert lit(frame(scene, t)) > 1.2 * lit(look)
+    style.thickness = 1.0
+    style.fabric = 0.0
+    no_fabric = frame(scene, t)
+    style.fabric = 2.0
+    dense = frame(scene, t)
+    style.fabric = 1.0
+    assert no_fabric.sum() < look.sum() < dense.sum()
     # Fewer waves, another order, the lines: rebuilt without a GL error.
     scene.feeds["dog"].visible = [0, 1, 2, 3]
     frame(scene, clock)
@@ -288,6 +306,28 @@ _CHILD = textwrap.dedent(r'''
     frame(scene, clock)
     scene.shape = "lines"
     frame(scene, clock)
+    # Another field in view: a new scene of that length, on the same
+    # context, keeping the rest (as the widget does before a frame).
+    import types
+    holder = types.SimpleNamespace(_scene=scene, _ready=True)
+    style.seconds = 12.0
+    lg.LandscapeGLView._follow_style(holder)
+    fresh = holder._scene
+    assert fresh is not scene and holder._ready and fresh.seconds == 12.0
+    assert fresh.style is style and fresh.navigation is scene.navigation
+    assert fresh.feeds["dog"].visible == [0, 1, 2, 3]
+    assert (fresh.order, fresh.shape) == ("interleaved", "lines")
+    fresh.shape = "mesh"
+    for k in range(60):
+        clock += 1.0 / 60.0
+        while fed + 25 <= human.shape[0] and \
+                fed < (420 + k) / 60.0 * 250 + 25:
+            fresh.push("human", _packet(human[fed:fed + 25]), clock)
+            fresh.push("dog", _packet(dog[fed:fed + 25]), clock)
+            fed += 25
+        fresh.advance(clock)
+    assert fresh.count > 0
+    assert lit(frame(fresh, clock)) > 1000
     print("cpu ms", round(sorted(cost[60:])[len(cost[60:]) // 2] * 1000, 2))
     print("OK")
 ''').replace("ROOT", repr(ROOT))

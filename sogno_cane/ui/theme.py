@@ -235,6 +235,11 @@ QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit {{
 QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QLineEdit:focus {{
     border-color: {ACCENT_PINK};
 }}
+QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled,
+QLineEdit:disabled {{
+    color: {TEXT_DIM};
+    background-color: transparent;
+}}
 QComboBox QAbstractItemView {{
     background-color: {BG_PANEL_HEX};
     color: {ACCENT_CYAN};
@@ -250,6 +255,7 @@ QComboBox::down-arrow {{
     border-right: 4px solid transparent;
     width: 0; height: 0;
 }}
+QComboBox::down-arrow:disabled {{ border-top-color: {BORDER_DIM}; }}
 
 QCheckBox {{ spacing: 10px; color: {TEXT}; }}
 QCheckBox::indicator {{
@@ -259,6 +265,9 @@ QCheckBox::indicator {{
     background: transparent;
 }}
 QCheckBox::indicator:checked {{ background: {ACCENT_PINK}; }}
+QCheckBox:disabled {{ color: {TEXT_DIM}; }}
+QCheckBox::indicator:disabled {{ border-color: {BORDER_DIM}; }}
+QCheckBox::indicator:checked:disabled {{ background: {BORDER_DIM}; }}
 
 QStatusBar {{
     background-color: transparent;

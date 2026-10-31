@@ -13,6 +13,9 @@ at any width a screen gives it, the transport row wrapping instead of
 cutting its buttons.
 """
 import os
+import subprocess
+import sys
+import textwrap
 
 import numpy as np
 import pytest
@@ -459,14 +462,121 @@ def test_projection_opens_and_closes_from_the_app(app, tmp_path):
     win._show_projection_controls()
     win._toggle_projection()
     assert win._projection is not None
-    # One screen only (offscreen): a window, not full screen over the PC's.
-    assert not win._projection.isFullScreen()
     assert win._projection_btn.text() == "PROIEZIONE ●"
     win._toggle_projection()
     _pump(30)
     assert win._projection is None
     assert win._projection_btn.text() == "PROIEZIONE"
     win.close()
+
+
+def _key(widget, key):
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QKeyEvent
+    from PySide6.QtWidgets import QApplication
+    QApplication.sendEvent(widget, QKeyEvent(
+        QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier))
+
+
+def test_full_screen_projection_has_no_title_bar_and_esc_brings_it_back(
+        app, tmp_path):
+    """Field request: at full screen, no title bar, even on the only screen
+    there is; Esc brings the window (and its title bar) back, a second Esc
+    closes it, F11 goes back to full screen. Esc reaching the app (the
+    keys may still go to it) does the same."""
+    from PySide6.QtCore import Qt
+    from sogno_cane.io.archive import Archive
+    from sogno_cane.ui.main_window import MainWindow
+    win = MainWindow(archive=Archive(root=str(tmp_path / "rec")))
+    win._show_projection_controls()
+    win._toggle_projection()
+    proj = win._projection
+    frameless = Qt.WindowType.FramelessWindowHint
+    assert proj.isFullScreen() and proj.windowFlags() & frameless
+    _key(proj, Qt.Key.Key_Escape)
+    assert not proj.isFullScreen()
+    assert not proj.windowFlags() & frameless          # title bar back
+    assert win._projection is proj                     # still open
+    _key(proj, Qt.Key.Key_F11)
+    assert proj.isFullScreen()
+    win._on_escape()                                   # Esc in the app
+    assert not proj.isFullScreen()
+    _key(proj, Qt.Key.Key_Escape)                      # second Esc: closes
+    _pump(30)
+    assert win._projection is None
+    win.close()
+
+
+_FULL_SCREEN_CHILD = textwrap.dedent(r'''
+    import os, sys, tempfile, time
+    sys.path.insert(0, ROOT)
+    os.environ["SOGNO_CANE_HOME"] = tempfile.mkdtemp()
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QGuiApplication, QKeyEvent
+    from PySide6.QtWidgets import QApplication
+    app = QApplication([])
+    if app.platformName() != "windows":
+        print("NOT-WINDOWS")
+        sys.exit(0)
+    from sogno_cane.eeg.profiles import DOG_PROFILE, HUMAN_PROFILE
+    from sogno_cane.ui import projection as pj
+
+    place = pj.ProjectionWindow.place
+
+    def hidden(self, screen, full=None):       # never on the screen
+        self.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+        place(self, screen, full)
+
+    pj.ProjectionWindow.place = hidden
+
+    def pump(seconds):
+        end = time.perf_counter() + seconds
+        while time.perf_counter() < end:
+            app.processEvents()
+            time.sleep(0.005)
+
+    def key(k):
+        QApplication.sendEvent(win, QKeyEvent(
+            QEvent.Type.KeyPress, k, Qt.KeyboardModifier.NoModifier))
+
+    win = pj.ProjectionWindow({"human": HUMAN_PROFILE, "dog": DOG_PROFILE},
+                              pj.ProjectionSettings(fullscreen=True))
+    closed = []
+    win.closed.connect(lambda: closed.append(True))
+    win.place(QGuiApplication.primaryScreen())
+    pump(0.4)
+    seen = [win.isFullScreen()]
+    for k in [Qt.Key.Key_Escape, Qt.Key.Key_F11] * 2 + [Qt.Key.Key_Escape]:
+        if closed:                     # closed too early: the states so far
+            break
+        key(k)
+        pump(0.4)
+        seen.append("closed" if closed else win.isFullScreen())
+    if not closed:
+        key(Qt.Key.Key_Escape)
+        pump(0.2)
+    print("STATES", seen, "CLOSED", closed == [True])
+''').replace("ROOT", repr(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))))
+
+
+def test_esc_takes_the_projection_out_of_full_screen_on_windows():
+    """On Windows itself: changing the title bar makes a new native window,
+    and Windows brought it back still full screen, so the first Esc only
+    put the title bar back. Out of full screen first, now every Esc and F11
+    does what it says. A child process on the real platform, the window
+    kept off the screen."""
+    env = dict(os.environ)
+    env.pop("QT_QPA_PLATFORM", None)
+    env["PYTHONIOENCODING"] = "utf-8"
+    done = subprocess.run([sys.executable, "-c", _FULL_SCREEN_CHILD],
+                          env=env, capture_output=True, text=True,
+                          timeout=120)
+    if "NOT-WINDOWS" in done.stdout:
+        return
+    assert "STATES" in done.stdout, done.stdout + done.stderr
+    assert "STATES [True, False, True, False, True, False] CLOSED True" \
+        in done.stdout, done.stdout
 
 
 # --------------------------------------------------------------------------- #
@@ -559,6 +669,149 @@ def test_the_point_of_view_is_kept_and_the_projector_shares_it(app,
     win.close()
     again = MainWindow(archive=Archive(root=str(tmp_path / "rec")))
     assert again._landscape.navigation.to_dict() == kept
+    again.close()
+
+
+# --------------------------------------------------------------------------- #
+# REGOLAZIONI of the 3D view (0.9.11)                                         #
+# --------------------------------------------------------------------------- #
+
+
+def test_view_style_keeps_to_its_ranges_and_tolerates_old_files():
+    from sogno_cane.ui.landscape_view import ViewStyle
+    style = ViewStyle()
+    assert style.to_dict() == ViewStyle.DEFAULTS
+    style.set("contrast", 99)
+    style.set("thickness", 0)
+    style.set("fabric", -1)
+    style.set("seconds", "dieci")              # not a number: unchanged
+    style.set("gain", float("nan"))
+    assert (style.contrast, style.thickness, style.fabric) == (2.5, 1.0, 0.0)
+    assert (style.seconds, style.gain) == (6.0, 1.0)
+    assert ViewStyle.from_dict(style.to_dict()).to_dict() == style.to_dict()
+    assert ViewStyle.from_dict(None).to_dict() == ViewStyle.DEFAULTS
+    old = ViewStyle.from_dict({"seconds": 40, "contrast": "?", "x": 1})
+    assert old.seconds == 20.0 and old.contrast == 1.0
+
+
+def _lit(image, threshold=40):
+    return sum(1 for x in range(0, image.width(), 3)
+               for y in range(0, image.height(), 3)
+               if image.pixelColor(x, y).value() > threshold)
+
+
+def _brightness(image):
+    return sum(image.pixelColor(x, y).value()
+               for x in range(0, image.width(), 3)
+               for y in range(0, image.height(), 3))
+
+
+def test_the_regolazioni_change_the_3d_picture(app):
+    """Contrast brightens the lines, thickness widens them, the fabric goes
+    from nothing (only the waves) to twice as present; another field in
+    view starts the strands again at that length, keeping the waves
+    chosen. The height of the waves is the same setting as the view's."""
+    from sogno_cane.ui.landscape_view import LandscapeView
+    view = LandscapeView({"human": HUMAN_PROFILE, "dog": DOG_PROFILE},
+                         background="#000000")
+    view.resize(800, 450)
+    view.drift = False
+    view.shape = "mesh"
+    _feed(view)
+    style = view.style
+    base = view.grab().toImage()
+    style.contrast = 2.0
+    assert _brightness(view.grab().toImage()) > 1.2 * _brightness(base)
+    style.contrast = 1.0
+    style.thickness = 3.0
+    assert _lit(view.grab().toImage()) > 1.2 * _lit(base)
+    style.thickness = 1.0
+    style.fabric = 0.0
+    bare = view.grab().toImage()
+    style.fabric = 2.0
+    dense = view.grab().toImage()
+    assert _brightness(bare) < _brightness(base) < _brightness(dense)
+    style.fabric = 1.0
+    assert view.grab().toImage() == base       # back as it was
+    view.gain = 2.0
+    assert style.gain == 2.0
+    style.gain = 1.0
+    view.set_visible_channels("dog", [0, 1])
+    style.seconds = 12.0
+    view.advance()
+    assert view._seconds == 12.0
+    assert all(s.n >= 12 * FS - s.step for s in view._streams.values())
+    assert view.visible_channels("dog") == [0, 1]
+    view.grab()                                # must not raise
+
+
+def test_the_regolazioni_panel_moves_the_style_and_resets_it(app):
+    from sogno_cane.ui.landscape_view import ViewStyle
+    from sogno_cane.ui.style_controls import ViewStyleControls
+    style = ViewStyle()
+    ctl = ViewStyleControls(style)
+    seen = []
+    ctl.changed.connect(lambda: seen.append(True))
+    for name, pos, value, text in (
+            ("contrast", 150, 1.5, "150 %"),
+            ("thickness", 25, 2.5, "2,5 px"),
+            ("seconds", 12, 12.0, "12 s"),
+            ("gain", 150, 1.5, "1,50 ×"),
+            ("fabric", 0, 0.0, "solo le onde")):
+        slider, label = ctl._rows[name][:2]
+        slider.setValue(pos)
+        assert getattr(style, name) == pytest.approx(value), name
+        assert label.text() == text
+    assert len(seen) == 5                       # every change at once
+    ctl.reset()
+    assert style.to_dict() == ViewStyle.DEFAULTS
+    assert ctl._rows["contrast"][0].value() == 100
+    assert ctl._rows["fabric"][1].text() == "100 %"
+    other = ViewStyle.from_dict({"thickness": 2.0})
+    ctl.set_style(other)
+    assert ctl._rows["thickness"][0].value() == 20
+    assert len(seen) == 6                       # loading is not a change
+
+
+def test_the_regolazioni_are_kept_and_the_projector_shares_them(app,
+                                                               tmp_path):
+    from PySide6.QtWidgets import QPushButton
+    from sogno_cane.io.archive import Archive
+    from sogno_cane.ui.main_window import MainWindow
+    from sogno_cane.ui.projection import ProjectionSettings
+    win = MainWindow(archive=Archive(root=str(tmp_path / "rec")))
+    button = [b for b in win.findChildren(QPushButton)
+              if b.text() == "REGOLAZIONI"]
+    assert len(button) == 1
+    button[0].click()
+    ctl = win._style_controls
+    assert ctl is not None and ctl.isVisible()
+    ctl._rows["contrast"][0].setValue(180)
+    assert win._landscape.style.contrast == pytest.approx(1.8)
+    win._show_projection_controls()
+    pc = win._projection_controls
+    assert pc._style_btn.isEnabled()            # 3D: REGOLAZIONI decide
+    assert not pc._seconds_sb.isEnabled() and not pc._gain_sb.isEnabled()
+    ctl.hide()
+    pc._style_btn.click()
+    assert ctl.isVisible()                      # the same panel
+    win._toggle_projection()
+    proj = win._projection
+    assert proj._view.style is win._landscape.style
+    ctl._rows["thickness"][0].setValue(20)
+    assert proj._view.style.thickness == pytest.approx(2.0)
+    proj.apply(ProjectionSettings(gain=2.5))    # the panel's height stays
+    assert win._landscape.style.gain == 1.0
+    pc._content_cb.setCurrentIndex(1)           # Tracce: their own fields
+    assert pc._seconds_sb.isEnabled() and pc._gain_sb.isEnabled()
+    assert not pc._style_btn.isEnabled()
+    win._toggle_projection()
+    _pump(30)
+    kept = win._landscape.style.to_dict()
+    win.close()
+    again = MainWindow(archive=Archive(root=str(tmp_path / "rec")))
+    assert again._landscape.style.to_dict() == kept
+    assert again._landscape.style.contrast == pytest.approx(1.8)
     again.close()
 
 

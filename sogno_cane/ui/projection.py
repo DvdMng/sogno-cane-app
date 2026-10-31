@@ -120,6 +120,7 @@ class ProjectionControls(QDialog):
 
     settings_changed = Signal(object)     # ProjectionSettings
     toggle_requested = Signal()           # open / close the projection
+    style_requested = Signal()            # the REGOLAZIONI of the 3D view
 
     def __init__(self, settings: ProjectionSettings,
                  parent: QWidget | None = None) -> None:
@@ -148,9 +149,10 @@ class ProjectionControls(QDialog):
 
         self._full_cb = QCheckBox("a tutto schermo")
         self._full_cb.setToolTip(
-            "Acceso: la proiezione copre tutto lo schermo scelto (senza "
-            "bordi né cursore).\nSpento: è una finestra normale, da "
-            "spostare e ridimensionare."
+            "Acceso: la proiezione copre tutto lo schermo scelto, senza "
+            "barra del titolo né cursore;\nEsc la riporta in una finestra, "
+            "F11 di nuovo a tutto schermo.\nSpento: è una finestra normale, "
+            "da spostare e ridimensionare."
         )
         form.addRow("", self._full_cb)
 
@@ -176,8 +178,8 @@ class ProjectionControls(QDialog):
         self._seconds_sb.setDecimals(0)
         self._seconds_sb.setSuffix(" s")
         self._seconds_sb.setToolTip(
-            "Quanto passato si vede: la lunghezza delle tracce, o quanto\n"
-            "lontano arrivano le onde nella vista 3D prima di dissolversi."
+            "Quanto passato si vede nelle tracce. La vista 3D si regola\n"
+            "con REGOLAZIONI DELLA VISTA 3D, come in STUDIO."
         )
         form.addRow("secondi", self._seconds_sb)
         self._gain_sb = QDoubleSpinBox()
@@ -185,7 +187,10 @@ class ProjectionControls(QDialog):
         self._gain_sb.setSingleStep(0.25)
         self._gain_sb.setDecimals(2)
         self._gain_sb.setSuffix(" ×")
-        self._gain_sb.setToolTip("Altezza delle onde.")
+        self._gain_sb.setToolTip(
+            "Altezza delle onde nelle tracce. La vista 3D si regola con\n"
+            "REGOLAZIONI DELLA VISTA 3D, come in STUDIO."
+        )
         form.addRow("ampiezza", self._gain_sb)
         self._labels_cb = QCheckBox("UOMO / CANE e nomi degli elettrodi")
         form.addRow("scritte", self._labels_cb)
@@ -193,6 +198,13 @@ class ProjectionControls(QDialog):
         self._drift_cb.setToolTip("Il punto di vista oscilla lentamente, "
                                   "così la profondità si legge (vista 3D).")
         form.addRow("", self._drift_cb)
+        self._style_btn = QPushButton("REGOLAZIONI DELLA VISTA 3D")
+        self._style_btn.setToolTip(
+            "Contrasto, spessore delle linee, campo visibile, ampiezza e\n"
+            "tessuto: gli stessi della vista 3D in STUDIO."
+        )
+        self._style_btn.clicked.connect(self.style_requested.emit)
+        form.addRow("", self._style_btn)
         v.addLayout(form)
 
         self._note = QLabel("")
@@ -267,6 +279,10 @@ class ProjectionControls(QDialog):
         is_3d = self._content_cb.currentData() == "3d"
         self._drift_cb.setEnabled(is_3d)
         self._shape_cb.setEnabled(is_3d)
+        self._style_btn.setEnabled(is_3d)
+        # The 3D view takes its seconds and height from REGOLAZIONI.
+        self._seconds_sb.setEnabled(not is_3d)
+        self._gain_sb.setEnabled(not is_3d)
 
     def _changed(self, *_args) -> None:
         if self._loading:
@@ -280,13 +296,18 @@ class ProjectionControls(QDialog):
         primary = QGuiApplication.primaryScreen()
         i = self._screen_cb.currentIndex()
         screen = self._screens[i] if 0 <= i < len(self._screens) else None
-        if len(self._screens) < 2:
+        if len(self._screens) < 2 and self._full_cb.isChecked():
+            text = ("C'è un solo schermo: a tutto schermo la proiezione lo "
+                    "copre. Esc la riporta in una finestra, un secondo Esc "
+                    "la chiude. Per il proiettore collegalo in modalità "
+                    "Estendi (Windows: Win+P, Estendi), poi premi RICERCA.")
+        elif len(self._screens) < 2:
             text = ("C'è un solo schermo: la proiezione si apre in una "
                     "finestra. Per il proiettore collegalo in modalità "
                     "Estendi (Windows: Win+P, Estendi), poi premi RICERCA.")
         elif screen is primary and self._full_cb.isChecked():
-            text = ("È lo schermo del PC: a tutto schermo lo coprirebbe. "
-                    "Esc o doppio clic sulla proiezione per chiuderla.")
+            text = ("È lo schermo del PC: a tutto schermo lo copre. Esc la "
+                    "riporta in una finestra, un secondo Esc la chiude.")
         else:
             text = ("La proiezione si apre sullo schermo scelto; l'app resta "
                     "qui e ogni modifica vale subito.")
@@ -322,6 +343,7 @@ class ProjectionWindow(QWidget):
         settings: ProjectionSettings,
         visible: dict[str, list[int]] | None = None,
         navigation=None,
+        style=None,
     ) -> None:
         super().__init__(None, Qt.WindowType.Window)
         self.setWindowTitle("SOGNO_CANE — proiezione")
@@ -339,6 +361,8 @@ class ProjectionWindow(QWidget):
         # The point of view of the 3D view, shared with STUDIO's when given:
         # turned on the PC, turned here too.
         self._navigation = navigation
+        self._style = style            # the 3D look, shared the same way
+        self._screen: QScreen | None = None
         self._view = None              # the 3D view, when it is shown
         self._traces: dict[str, WaveformWidget] = {}
         self._box = QVBoxLayout(self)
@@ -382,12 +406,15 @@ class ProjectionWindow(QWidget):
         self._clear()
         s = self._settings
         if s.content == "3d":
-            view = make_landscape_view(self._profiles, seconds=s.seconds,
+            seconds = s.seconds if self._style is None else self._style.seconds
+            view = make_landscape_view(self._profiles, seconds=seconds,
                                        background=_BLACK)
             for kind, chans in self._visible.items():
                 view.set_visible_channels(kind, chans)
             if self._navigation is not None:
                 view.navigation = self._navigation
+            if self._style is not None:
+                view.style = self._style
             view.reset_on_double_click = False     # here it closes
             self._view = view
             self._apply_live(s)
@@ -439,7 +466,8 @@ class ProjectionWindow(QWidget):
             self._view.order = s.layout
             self._view.shape = s.shape
             self._view.show_labels = s.labels
-            self._view.gain = s.gain
+            if self._style is None:      # else REGOLAZIONI decides
+                self._view.gain = s.gain
             self._view.drift = s.drift
         for wave in self._traces.values():
             wave.gain = s.gain
@@ -489,13 +517,22 @@ class ProjectionWindow(QWidget):
     # Placement                                                          #
     # ------------------------------------------------------------------ #
 
-    def place(self, screen: QScreen | None) -> None:
-        """On ``screen``: full screen if asked and if it is not the only
-        screen there is, else an ordinary window."""
-        full = self._settings.fullscreen and screen is not None \
-            and len(QGuiApplication.screens()) >= 2
+    def place(self, screen: QScreen | None,
+              full: bool | None = None) -> None:
+        """On ``screen``: full screen if asked, without a title bar, even
+        on the only screen there is (Esc brings the window back), else an
+        ordinary window."""
+        if full is None:
+            full = self._settings.fullscreen
+        full = bool(full) and screen is not None
+        self._screen = screen
         if self.isVisible():
             self.hide()
+        if not full:
+            # Out of full screen before the flags change: that makes a new
+            # native window, which Windows otherwise brought back still full
+            # screen (the title bar back, the window not out of it).
+            self.setWindowState(Qt.WindowState.WindowNoState)
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, full)
         if screen is not None:
             self.setScreen(screen)
@@ -510,9 +547,21 @@ class ProjectionWindow(QWidget):
         if full:
             self.showFullScreen()
             self.setCursor(Qt.CursorShape.BlankCursor)
+            if screen is QGuiApplication.primaryScreen():
+                # Covering the app: take the keys, so that Esc answers.
+                self.raise_()
+                self.activateWindow()
         else:
             self.showNormal()
             self.unsetCursor()
+
+    def windowed(self) -> None:
+        """Out of full screen, title bar back, on the same screen."""
+        if self.isFullScreen():
+            self.place(self._screen, full=False)
+
+    def toggle_fullscreen(self) -> None:
+        self.place(self._screen, full=not self.isFullScreen())
 
     # ------------------------------------------------------------------ #
     # Frames and closing                                                 #
@@ -538,7 +587,13 @@ class ProjectionWindow(QWidget):
 
     def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt name
         if event.key() == Qt.Key.Key_Escape:
-            self.close()
+            if self.isFullScreen():
+                self.windowed()          # the title bar back first
+            else:
+                self.close()
+            return
+        if event.key() == Qt.Key.Key_F11:
+            self.toggle_fullscreen()
             return
         super().keyPressEvent(event)
 

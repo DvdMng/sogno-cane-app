@@ -341,6 +341,7 @@ class DevicePanel(QWidget):
         self.source_finished.connect(self._on_source_finished)
 
         self._refresh_ports()
+        self._sync_mode_buttons()      # «ripeti» only for a file, from start
 
     # ------------------------------------------------------------------ #
     # Public API                                                         #

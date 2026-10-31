@@ -214,6 +214,51 @@ def nav_double_click(view, event) -> None:
     event.accept()
 
 
+class ViewStyle:
+    """How the 3D view looks, as the user sets it (REGOLAZIONI): the
+    contrast of the lines, their thickness, the seconds of EEG in view, the
+    height of the waves, how much of the fabric shows. STUDIO and the
+    projection share one, like the point of view."""
+
+    RANGES = {
+        "contrast": (0.4, 2.5),
+        "thickness": (1.0, 3.0),
+        "seconds": (2.0, 20.0),
+        "gain": (0.3, 3.0),
+        "fabric": (0.0, 2.0),
+    }
+    DEFAULTS = {"contrast": 1.0, "thickness": 1.0, "seconds": 6.0,
+                "gain": 1.0, "fabric": 1.0}
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        for name, value in self.DEFAULTS.items():
+            setattr(self, name, value)
+
+    def set(self, name: str, value) -> None:
+        lo, hi = self.RANGES[name]
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return
+        if math.isfinite(value):
+            setattr(self, name, min(hi, max(lo, value)))
+
+    def to_dict(self) -> dict:
+        return {name: float(getattr(self, name)) for name in self.DEFAULTS}
+
+    @classmethod
+    def from_dict(cls, data) -> "ViewStyle":
+        style = cls()
+        if isinstance(data, dict):
+            for name in cls.DEFAULTS:
+                if name in data:
+                    style.set(name, data[name])
+        return style
+
+
 class _Stream:
     """One being's EEG: cleaned, paced like the trace view, last N s kept."""
 
@@ -284,10 +329,12 @@ class LandscapeView(QWidget):
     ) -> None:
         super().__init__(parent)
         self._streams = {k: _Stream(p, seconds) for k, p in profiles.items()}
+        self._seconds = float(seconds)
+        self.style = ViewStyle()
+        self.style.set("seconds", seconds)
         self.order = "grouped"
         self.shape = "lines"         # or "mesh": neighbouring strands joined
         self.show_labels = True
-        self.gain = 1.0
         self.drift = True
         self.navigation = Navigation()
         self.reset_on_double_click = True
@@ -304,6 +351,14 @@ class LandscapeView(QWidget):
     # ------------------------------------------------------------------ #
     # Feeding                                                            #
     # ------------------------------------------------------------------ #
+
+    @property
+    def gain(self) -> float:
+        return self.style.gain
+
+    @gain.setter
+    def gain(self, value: float) -> None:
+        self.style.set("gain", value)
 
     def push(self, kind: str, packet: UnicornPacket) -> None:
         stream = self._streams.get(kind)
@@ -330,9 +385,8 @@ class LandscapeView(QWidget):
         old = self._streams.get(kind)
         if old is None:
             return
-        seconds = old.n / old.fs
         visible = old.visible
-        self._streams[kind] = _Stream(profile, seconds)
+        self._streams[kind] = _Stream(profile, self._seconds)
         self.set_visible_channels(kind, visible)
 
     def set_visible_channels(self, kind: str, indices) -> None:
@@ -347,8 +401,20 @@ class LandscapeView(QWidget):
     def visible_channels(self, kind: str) -> list[int]:
         return list(self._streams[kind].visible)
 
+    def _follow_style(self) -> None:
+        """Another field in view: the strands start again at that length."""
+        if abs(self.style.seconds - self._seconds) < 1e-6:
+            return
+        self._seconds = float(self.style.seconds)
+        for kind, old in list(self._streams.items()):
+            fresh = _Stream(old.profile, self._seconds)
+            fresh.visible = old.visible
+            self._streams[kind] = fresh
+        self._fit_key = None
+
     def advance(self) -> None:
         """Reveal what arrived since the last frame and repaint."""
+        self._follow_style()
         now = time.perf_counter()
         for s in self._streams.values():
             s.advance(now)
@@ -520,13 +586,13 @@ class LandscapeView(QWidget):
             labels.append((LABELS[kind], x / k, y / k))
         return labels
 
-    @staticmethod
-    def _pen(base: QColor, age: float, weight: float = 1.0) -> QPen:
+    def _pen(self, base: QColor, age: float, weight: float = 1.0) -> QPen:
         """The past dissolves: with depth a strand turns toward the shared
-        haze and fades out."""
+        haze and fades out. Contrast and thickness as set."""
         c = _mix(base, _HAZE, min(1.0, 1.3 * age))
-        c.setAlphaF(weight * 0.95 * (1.0 - age) ** 1.7)
-        pen = QPen(c, 1.0)
+        c.setAlphaF(min(1.0, self.style.contrast * weight * 0.95
+                        * (1.0 - age) ** 1.7))
+        pen = QPen(c, self.style.thickness)
         pen.setCosmetic(True)
         return pen
 
@@ -655,8 +721,11 @@ class LandscapeView(QWidget):
                     p.drawPath(arrayToQPath(bx, by))
             lo, hi = cols[bands[b]], cols[bands[b + 1]]
             age = float(z_all[lo] / _DEPTH)
+            fabric = _THREAD_WEIGHT * self.style.fabric
             for q, rows in threads.items():
-                p.setPen(self._pen(thread_colors[q], age, _THREAD_WEIGHT))
+                if fabric <= 0.0:
+                    break
+                p.setPen(self._pen(thread_colors[q], age, fabric))
                 stroke(rows, lo, hi, _THREAD_STEP)
             for _name, members in strand_groups.items():
                 p.setPen(self._pen(ck[members[0]], age))
@@ -667,12 +736,12 @@ class LandscapeView(QWidget):
         p.setPen(self._grid_pen(0.0, 1.6))
         p.drawPath(arrayToQPath(sx[:, 0], sy[:, 0]))
 
-    @staticmethod
-    def _grid_pen(age: float, weight: float = 1.0) -> QPen:
+    def _grid_pen(self, age: float, weight: float = 1.0) -> QPen:
         """Cross-sections: neutral, thin, gone well before the strands."""
         c = QColor(_GRID)
-        c.setAlphaF(min(1.0, weight * 0.52 * (1.0 - age) ** 2.2))
-        pen = QPen(c, 1.0)
+        c.setAlphaF(min(1.0, self.style.contrast * weight * 0.52
+                        * (1.0 - age) ** 2.2))
+        pen = QPen(c, self.style.thickness)
         pen.setCosmetic(True)
         return pen
 

@@ -272,6 +272,9 @@ class _Scene:
         fs = max(float(p.sample_rate_hz) for p in profiles.values())
         total = max(16, int(round(seconds * fs)))
         self.total = total
+        self.seconds = float(seconds)
+        self.style = lv.ViewStyle()
+        self.style.set("seconds", seconds)
         self.step = max(1, math.ceil(total / _MAX_COLUMNS))
         self.n = max(16, total // self.step)            # columns shown
         self.col_s = self.step / fs                     # seconds per column
@@ -292,7 +295,6 @@ class _Scene:
         self.order = "grouped"
         self.shape = "lines"
         self.show_labels = True
-        self.gain = 1.0
         self.drift = True
         self.navigation = lv.Navigation()
         self.bg = QColor(background)
@@ -455,6 +457,14 @@ class _Scene:
     # ------------------------------------------------------------------ #
     # Camera                                                             #
     # ------------------------------------------------------------------ #
+
+    @property
+    def gain(self) -> float:
+        return self.style.gain
+
+    @gain.setter
+    def gain(self, value: float) -> None:
+        self.style.set("gain", value)
 
     def _amp(self) -> float:
         relief = lv._MESH_RELIEF if self.shape == "mesh" else 1.0
@@ -738,10 +748,15 @@ class _Scene:
             p.setAttributeBuffer(0, _GL_FLOAT, 0, 4, _FLOATS * 4)
             p.setAttributeBuffer(1, _GL_FLOAT, 16, 3, _FLOATS * 4)
 
+        style = self.style
+
         def look(mode: float, alpha: float, power: float) -> None:
             p.setUniformValue1f("u_mode", mode)
-            p.setUniformValue1f("u_alpha", alpha)
+            p.setUniformValue1f("u_alpha", alpha * style.contrast)
             p.setUniformValue1f("u_power", power)
+
+        def width(px: float) -> None:
+            f.glLineWidth(px * style.thickness)
 
         def indexed(mode: int, name: str, c0: int, c1: int) -> None:
             """The elements of columns c0 to c1 (slots)."""
@@ -774,10 +789,11 @@ class _Scene:
             f.glDisable(_GL_POLYGON_OFFSET_FILL)
             f.glDepthFunc(_GL_LEQUAL)
             f.glDepthMask(_GL_FALSE)
-            # The fabric between the strands.
-            look(1.0, 0.95, 1.7)
-            f.glLineWidth(1.0)
-            along("threads", first, newest)
+            # The fabric between the strands, as much as it is set to show.
+            width(1.0)
+            if style.fabric > 0.0:
+                look(1.0, 0.95 * style.fabric, 1.7)
+                along("threads", first, newest)
             # Cross-sections at even intervals of time.
             look(2.0, 0.52, 2.2)
             every = max(1, round(_SECTION_S / self.col_s))
@@ -788,16 +804,16 @@ class _Scene:
                 f.glDrawArrays(_GL_LINE_STRIP, slot * rows, rows)
             # The front edge: the present.
             look(2.0, 0.83, 1.0)
-            f.glLineWidth(1.4)
+            width(1.4)
             f.glDrawArrays(_GL_LINE_STRIP, newest * rows, rows)
         else:
             f.glDisable(_GL_DEPTH_TEST)
             f.glDepthMask(_GL_FALSE)
         # The strands, heavier near the present.
         look(1.0, 0.95, 1.7)
-        f.glLineWidth(1.0)
+        width(1.0)
         along("strands", first, near)
-        f.glLineWidth(1.6)
+        width(1.6)
         along("strands", near, newest)
         f.glLineWidth(1.0)
         f.glDepthMask(_GL_TRUE)
@@ -869,6 +885,7 @@ class LandscapeGLView(_GLBase):
     gain = _get("gain")
     drift = _get("drift")
     navigation = _get("navigation")
+    style = _get("style")
     del _get
 
     def push(self, kind: str, packet: UnicornPacket) -> None:
@@ -923,6 +940,24 @@ class LandscapeGLView(_GLBase):
         if ctx is not None:
             ctx.aboutToBeDestroyed.connect(self._release)
 
+    def _follow_style(self) -> None:
+        """Another field in view: the scene starts again at that length,
+        keeping everything else (on the context, from paintGL)."""
+        old = self._scene
+        if abs(old.style.seconds - old.seconds) < 1e-6:
+            return
+        fresh = _Scene({k: f.profile for k, f in old.feeds.items()},
+                       old.style.seconds, old.bg)
+        for name in ("order", "shape", "show_labels", "drift", "navigation",
+                     "style"):
+            setattr(fresh, name, getattr(old, name))
+        for kind, feed in old.feeds.items():
+            fresh.feeds[kind].visible = list(feed.visible)
+        fresh._t0 = old._t0
+        old.release_gl()
+        self._ready = fresh.init_gl()
+        self._scene = fresh
+
     def _release(self) -> None:
         self.makeCurrent()
         self._scene.release_gl()
@@ -952,6 +987,7 @@ class LandscapeGLView(_GLBase):
         w = max(1, int(round(self.width() * dpr)))
         h = max(1, int(round(self.height() * dpr)))
         now = time.perf_counter()
+        self._follow_style()
         self._scene.advance(now)
         ctx = self.context()
         f = ctx.functions()

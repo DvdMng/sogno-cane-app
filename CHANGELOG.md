@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.9.11 — regolazioni della vista 3D, proiezione senza barra del titolo
+
+- **Proiezione a tutto schermo senza barra del titolo, anche con un solo
+  schermo.** Con «a tutto schermo» la proiezione copre lo schermo scelto
+  senza barra del titolo né cursore anche quando c'è solo lo schermo del
+  PC; prima, in quel caso, si apriva in una finestra. Esc riporta la
+  finestra con la sua barra, un secondo Esc la chiude, F11 torna a tutto
+  schermo. Se i tasti arrivano all'app invece che alla proiezione, Esc la
+  riporta comunque in una finestra.
+- **REGOLAZIONI della vista 3D.** Un pulsante accanto a FORMA e
+  DISPOSIZIONE apre un pannello con:
+  - contrasto (40–250 %): quanto le linee risaltano sul fondo;
+  - spessore linee (1–3 px): onde, fili e sezioni;
+  - campo visibile (2–20 s): quanti secondi di EEG si vedono, dal presente
+    in primo piano al passato in fondo; cambiandolo la vista riparte da
+    capo;
+  - ampiezza (0,30–3 ×): l'altezza delle onde;
+  - tessuto (0–200 %): quanto si vedono i fili fra le onde nella forma
+    MESH; a zero restano solo le onde.
+
+  Ogni modifica si vede subito, in STUDIO e in proiezione, e resta alla
+  riapertura; VALORI INIZIALI riporta tutto com'era. Il pannello della
+  PROIEZIONE ha lo stesso pulsante, e i suoi campi «secondi» e «ampiezza»
+  valgono ora solo per le tracce.
+- **Campi disattivati riconoscibili.** Menu, campi numerici e caselle
+  disattivati appaiono attenuati, come già i pulsanti. «ripeti», che vale
+  solo per la sorgente FILE, è spento fin dall'avvio con il simulatore.
+
+Test: +6, **328 totali**.
+
 ## 0.9.10 — vista 3D navigabile, i momenti caotici restano
 
 - **Vista 3D navigabile con il mouse.** Si trascina per ruotare la scena,

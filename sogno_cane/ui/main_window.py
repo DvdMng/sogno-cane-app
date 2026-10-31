@@ -7,7 +7,7 @@ import time
 
 import numpy as np
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut
 import os
 
 from PySide6.QtWidgets import (
@@ -34,7 +34,11 @@ from sogno_cane.settings import Settings
 from sogno_cane.ui.archive_panel import ArchivePanel
 from sogno_cane.ui.device_panel import DevicePanel
 from sogno_cane.ui.landscape_gl import make_landscape_view
-from sogno_cane.ui.landscape_view import NAVIGATION_HINT, Navigation
+from sogno_cane.ui.landscape_view import (
+    NAVIGATION_HINT,
+    Navigation,
+    ViewStyle,
+)
 from sogno_cane.ui.mapping_panel import MappingPanel
 from sogno_cane.ui.midi_monitor import MidiMonitor
 from sogno_cane.ui.projection import (
@@ -51,6 +55,7 @@ from sogno_cane.ui.theme import (
     ChromeTitle,
     app_icon,
 )
+from sogno_cane.ui.style_controls import ViewStyleControls
 from sogno_cane.ui.wrap_row import WrapRow
 
 # Room for the window frame and title bar (Windows), in logical pixels.
@@ -116,6 +121,11 @@ class MainWindow(QMainWindow):
         # Projection on a second screen (window and its control panel).
         self._projection: ProjectionWindow | None = None
         self._projection_controls: ProjectionControls | None = None
+        self._style_controls: ViewStyleControls | None = None
+        # Esc here too: a full-screen projection on this screen covers the
+        # app, and the keys may still come to the app.
+        esc = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
+        esc.activated.connect(self._on_escape)
         self._projection_settings = ProjectionSettings.from_dict(
             self._settings.get("projection", "settings", default={})
         )
@@ -258,6 +268,14 @@ class MainWindow(QMainWindow):
         hint.setAlignment(Qt.AlignmentFlag.AlignRight
                           | Qt.AlignmentFlag.AlignVCenter)
         hint.setStyleSheet(f"color: {TEXT_DIM}; font-size: 8pt;")
+        opts.addSpacing(18)
+        style_btn = QPushButton("REGOLAZIONI")
+        style_btn.setToolTip(
+            "Contrasto, spessore delle linee, campo visibile, ampiezza e\n"
+            "tessuto della vista 3D (anche in proiezione)."
+        )
+        style_btn.clicked.connect(self._show_style_controls)
+        opts.addWidget(style_btn)
         opts.addSpacing(18)
         opts.addWidget(hint, 1)
         box.addLayout(opts)
@@ -586,12 +604,17 @@ class MainWindow(QMainWindow):
             "    DISPOSIZIONE: affiancati (uomo a sinistra, cane a destra)\n"
             "    o intrecciati. Si naviga con il mouse: trascina per\n"
             "    ruotare, tasto destro per spostare, rotella per avvicinare,\n"
-            "    doppio clic per l'inquadratura iniziale. La proiezione\n"
-            "    mostra lo stesso punto di vista.\n"
+            "    doppio clic per l'inquadratura iniziale. REGOLAZIONI:\n"
+            "    contrasto, spessore delle linee, campo visibile, ampiezza,\n"
+            "    tessuto. La proiezione mostra lo stesso punto di vista e le\n"
+            "    stesse regolazioni.\n"
             "  • PROIEZIONE porta le onde sul proiettore collegato in\n"
             "    modalità Estendi (Windows: Win+P, Estendi) mentre l'app\n"
             "    resta qui. Dal suo pannello: schermo, tutto schermo,\n"
-            "    vista 3D o tracce, forma, disposizione, secondi, ampiezza.\n\n"
+            "    vista 3D o tracce, forma, disposizione; secondi e ampiezza\n"
+            "    per le tracce. A tutto schermo non c'è la barra del titolo:\n"
+            "    Esc riporta la finestra, un secondo Esc la chiude, F11 torna\n"
+            "    a tutto schermo.\n\n"
             "NOTE CHE RESTANO ACCESE\n"
             "  PANIC manda un note-off per ogni nota di ogni canale: spegne\n"
             "  anche le note rimaste appese in Ableton da una sessione\n"
@@ -993,11 +1016,31 @@ class MainWindow(QMainWindow):
         if self._projection is not None:
             self._projection.set_profile(kind, profile)
 
+    def _show_style_controls(self) -> None:
+        """REGOLAZIONI of the 3D view, for STUDIO and the projection."""
+        if self._style_controls is None:
+            ctl = ViewStyleControls(self._landscape.style, self)
+            ctl.changed.connect(self._on_style_changed)
+            self._style_controls = ctl
+        self._style_controls.show()
+        self._style_controls.raise_()
+        self._style_controls.activateWindow()
+
+    def _on_style_changed(self) -> None:
+        self._landscape.update()
+        if self._projection is not None:
+            self._projection.update()
+
+    def _on_escape(self) -> None:
+        if self._projection is not None and self._projection.isFullScreen():
+            self._projection.windowed()
+
     def _show_projection_controls(self) -> None:
         if self._projection_controls is None:
             ctl = ProjectionControls(self._projection_settings, self)
             ctl.settings_changed.connect(self._on_projection_settings)
             ctl.toggle_requested.connect(self._toggle_projection)
+            ctl.style_requested.connect(self._show_style_controls)
             self._projection_controls = ctl
         self._projection_controls.set_projecting(self._projection is not None)
         self._projection_controls.show()
@@ -1018,6 +1061,7 @@ class MainWindow(QMainWindow):
              "dog": self._dog.visible_channels()},
             # The projector shows the point of view set in STUDIO.
             navigation=self._landscape.navigation,
+            style=self._landscape.style,
         )
         win.closed.connect(self._on_projection_closed)
         self._projection = win
@@ -1121,6 +1165,8 @@ class MainWindow(QMainWindow):
             self._set_landscape("order", order)
         self._landscape.navigation = Navigation.from_dict(
             self._settings.get("display", "camera_3d", default=None))
+        self._landscape.style = ViewStyle.from_dict(
+            self._settings.get("display", "style_3d", default=None))
         if self._settings.get("display", "view_3d", default=False):
             self._set_view_3d(True)
 
@@ -1139,6 +1185,8 @@ class MainWindow(QMainWindow):
         self._settings.set("display", "order_3d", self._landscape.order)
         self._settings.set("display", "camera_3d",
                            self._landscape.navigation.to_dict())
+        self._settings.set("display", "style_3d",
+                           self._landscape.style.to_dict())
         self._settings.set("projection", "settings",
                            self._projection_settings.to_dict())
         self._settings.save()

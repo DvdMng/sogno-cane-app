@@ -68,6 +68,11 @@ RECONNECT_AFTER_FAILURES = 8
 # Minimum seconds between two reconnect attempts (a dead port must not spin).
 RECONNECT_MIN_INTERVAL_S = 2.0
 
+# Controller numbers of the channel-mode messages a panic sends.
+_CC_SUSTAIN = 64
+_CC_ALL_SOUND_OFF = 120
+_CC_ALL_NOTES_OFF = 123
+
 
 class MidiOutput:
     """Thread-safe MIDI output. Opens a single port and queues writes.
@@ -77,13 +82,23 @@ class MidiOutput:
     send raise while the app looks perfectly alive — the user sees the
     event monitor move while loopMIDI's counter is frozen. After a few
     consecutive failures the output automatically re-opens the same port
-    by name and sends All-Notes-Off to clear anything left hanging.
+    by name and releases whatever was left hanging.
+
+    It also keeps the notes it has switched on and not yet off. All Notes
+    Off (CC 123) alone does not release them reliably: Ableton and many
+    instruments ignore it, so a note whose note-off was lost (a stalled
+    port, a port closed mid-note) stayed on until Ableton was restarted.
+    Every release here sends the explicit note-offs, and a note is never
+    switched on twice in a row: a synth that stacks voices would keep one
+    of the two after the single note-off.
     """
 
     def __init__(self) -> None:
         self._port = None
         self._port_name: str | None = None
-        self._lock = threading.Lock()
+        # Re-entrant: a note-on holds it across the note-off it may send
+        # first and its own send, so no other thread can come in between.
+        self._lock = threading.RLock()
         # Health bookkeeping (all guarded by _lock).
         self._sent_count = 0
         self._failed_count = 0
@@ -91,6 +106,11 @@ class MidiOutput:
         self._reconnects = 0
         self._last_error = ""
         self._last_reconnect_attempt = -1.0e9
+        # (channel, note) switched on and not yet off (guarded by _lock).
+        self._sounding: set[tuple[int, int]] = set()
+        # Of those, the ones whose note-off failed: sent again as soon as
+        # the port takes messages again.
+        self._lost_offs: set[tuple[int, int]] = set()
 
     @property
     def is_open(self) -> bool:
@@ -123,12 +143,17 @@ class MidiOutput:
                 "python-rtmidi not installed; reinstall the bundle"
             )
         with self._lock:
+            previous = self._port_name
             self._close_locked()
             out = rtmidi.MidiOut()
             idx = self._find_port_index(out, port_name)
             if idx < 0:
                 raise RuntimeError(f"MIDI port {port_name!r} not found")
             out.open_port(idx, "SOGNO_CANE")
+            if port_name != previous:
+                # Whatever the old port could not release belongs to it.
+                self._sounding.clear()
+                self._lost_offs.clear()
             self._port = out
             self._port_name = port_name
             self._consec_failures = 0
@@ -154,12 +179,9 @@ class MidiOutput:
     def _close_locked(self) -> None:
         if self._port is None:
             return
-        # Best-effort: All Notes Off on every channel before closing.
-        try:
-            for ch in range(16):
-                self._port.send_message([_status(0xB0, ch), 123, 0])
-        except Exception:
-            pass
+        # Release what is sounding before the handle goes: a note-off sent
+        # after closing would never arrive.
+        self._release_locked()
         try:
             self._port.close_port()
         except Exception:
@@ -178,18 +200,49 @@ class MidiOutput:
     def send_note_on(
         self, note: int, velocity: int = 96, channel: int = 0
     ) -> None:
-        self._send_raw([
-            _status(0x90, channel),
-            max(0, min(127, int(note))),
-            max(0, min(127, int(velocity))),
-        ])
+        key = (int(channel) & 0x0F, max(0, min(127, int(note))))
+        velocity = max(0, min(127, int(velocity)))
+        with self._lock:
+            if velocity == 0:                   # a note-off in MIDI terms
+                if self._send_raw([_status(0x90, key[0]), key[1], 0]):
+                    self._sounding.discard(key)
+                return
+            if key in self._sounding:
+                # Already on: close it first, or a synth that stacks
+                # voices keeps one after the single note-off to come.
+                self._off_locked(key)
+            if self._send_raw([_status(0x90, key[0]), key[1], velocity]):
+                self._sounding.add(key)
 
     def send_note_off(self, note: int, channel: int = 0) -> None:
-        self._send_raw([
-            _status(0x80, channel),
-            max(0, min(127, int(note))),
-            0,
-        ])
+        key = (int(channel) & 0x0F, max(0, min(127, int(note))))
+        with self._lock:
+            self._off_locked(key)
+
+    def _off_locked(self, key: tuple[int, int]) -> None:
+        # Forgotten only once the note-off is out: if it fails, it is sent
+        # again as soon as the port works (and by any release).
+        if self._send_raw([_status(0x80, key[0]), key[1], 0]):
+            self._sounding.discard(key)
+            self._lost_offs.discard(key)
+        elif key in self._sounding:
+            self._lost_offs.add(key)
+
+    def _resend_lost_offs_locked(self) -> None:
+        for key in sorted(self._lost_offs):
+            try:
+                self._port.send_message([_status(0x80, key[0]), key[1], 0])
+            except Exception:
+                return
+            self._sent_count += 1
+            self._lost_offs.discard(key)
+            self._sounding.discard(key)
+
+    @property
+    def sounding(self) -> set[tuple[int, int]]:
+        """(channel, note) switched on and not yet off."""
+        with self._lock:
+            return set(self._sounding)
 
     def send_control_change(
         self, control: int, value: int, channel: int = 0
@@ -210,25 +263,65 @@ class MidiOutput:
         ])
 
     def all_notes_off(self, channel: int | None = None) -> None:
-        if channel is None:
-            for ch in range(16):
-                self.send_control_change(123, 0, channel=ch)
-        else:
-            self.send_control_change(123, 0, channel=channel)
+        """Release the notes this output switched on, then All Notes Off."""
+        with self._lock:
+            if channel is None:
+                self._release_locked()
+                return
+            ch = int(channel) & 0x0F
+            for key in sorted(k for k in self._sounding if k[0] == ch):
+                self._off_locked(key)
+            self._send_raw([_status(0xB0, ch), _CC_ALL_NOTES_OFF, 0])
 
-    def _send_raw(self, msg: list[int]) -> None:
+    def release_all(self) -> int:
+        """Explicit note-off for every note still on; how many there were."""
+        with self._lock:
+            n = len(self._sounding)
+            self._release_locked()
+            return n
+
+    def _release_locked(self) -> None:
+        for key in sorted(self._sounding):
+            self._off_locked(key)
+        for ch in range(16):
+            self._send_raw([_status(0xB0, ch), _CC_ALL_NOTES_OFF, 0])
+
+    def panic(self) -> None:
+        """Silence everything on the port, whoever switched it on.
+
+        A note-off for every note on every channel, then Sustain off, All
+        Sound Off and All Notes Off: it also clears notes left on by a
+        previous session or by a crash, which this output knows nothing
+        about. One channel at a time, so a send never waits long.
+        """
+        for ch in range(16):
+            with self._lock:
+                for note in range(128):
+                    self._send_raw([_status(0x80, ch), note, 0])
+                    self._sounding.discard((ch, note))
+                    self._lost_offs.discard((ch, note))
+                for cc in (_CC_SUSTAIN, _CC_ALL_SOUND_OFF, _CC_ALL_NOTES_OFF):
+                    self._send_raw([_status(0xB0, ch), cc, 0])
+            time.sleep(0.001)
+
+    def _send_raw(self, msg: list[int]) -> bool:
+        """The one place a message reaches the port; False if it did not."""
         with self._lock:
             if self._port is None:
-                return
+                return False
             try:
                 self._port.send_message(msg)
-                self._sent_count += 1
-                self._consec_failures = 0
             except Exception as exc:
                 self._failed_count += 1
                 self._consec_failures += 1
                 self._last_error = str(exc) or type(exc).__name__
                 self._maybe_reconnect_locked()
+                return False
+            self._sent_count += 1
+            self._consec_failures = 0
+            if self._lost_offs:
+                self._resend_lost_offs_locked()
+            return True
 
     # ------------------------------------------------------------------ #
     # Health / auto-reconnect                                            #
@@ -290,10 +383,15 @@ class MidiOutput:
             pass
         self._reconnects += 1
         self._consec_failures = 0
-        # The synth may still hold notes from before the stall.
+        # Note-offs lost during the stall left those notes on at the other
+        # end: send them again, explicitly (or at the first send that gets
+        # through, if the port is not taking messages yet).
+        self._resend_lost_offs_locked()
         try:
             for ch in range(16):
-                self._port.send_message([_status(0xB0, ch), 123, 0])
+                self._port.send_message(
+                    [_status(0xB0, ch), _CC_ALL_NOTES_OFF, 0]
+                )
         except Exception:
             pass
 

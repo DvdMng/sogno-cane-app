@@ -59,6 +59,9 @@ class CoherenceCCStrategy:
     cc_number: int = 1  # mod wheel
     channel: int = 2
     smoothing: float = 0.4   # 0 = no smoothing, ~1 = very slow
+    # Range of values sent (0-127 = the whole range).
+    out_min: int = 0
+    out_max: int = 127
     min_interval_seconds: float = 0.04
     name: str = "CoherenceCC"
     enabled: bool = True
@@ -109,7 +112,9 @@ class CoherenceCCStrategy:
         self._smoothed = (
             self.smoothing * self._smoothed + (1.0 - self.smoothing) * s
         )
-        cc_val = int(round(self._smoothed * 127.0))
+        lo = max(0, min(127, int(self.out_min)))
+        hi = max(0, min(127, int(self.out_max)))
+        cc_val = int(round(lo + self._smoothed * (hi - lo)))
         if self._last_t > ctx.t_seconds:
             # Clock restarted behind our state (fresh engine re-using this
             # live strategy object): drop the stale throttle timestamp.

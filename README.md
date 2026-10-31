@@ -40,6 +40,19 @@ disattivate) e **binario** a 17 float dell'Unicorn UDP Interface (Hybrid
 Black). Le registrazioni **CSV** e **BDF+** del Recorder si riproducono con
 **FILE**. Guida completa: `portable/EEG_COLLEGAMENTO.txt`.
 
+## Novità della versione 0.9.6
+
+* **Note accese fino al riavvio di Ableton**: PANIC ora le spegne davvero
+  (un note-off per ogni nota di ogni canale) e l'app non ne lascia più
+  indietro dopo un blocco della porta MIDI.
+* **CC**: «uscita» sceglie il tratto del parametro percorso (es. 30–90);
+  morbidezza al centesimo, con il tempo di risposta.
+* **ONDE**: ogni pannello mostra solo gli elettrodi scelti (per esempio i
+  4 dell'amplificatore del cane).
+* **VISTA 3D**: le onde dell'uomo e del cane insieme, in prospettiva.
+* **PROIEZIONE**: sul proiettore in modalità Estendi mentre l'app resta sul
+  PC, configurabile dal suo pannello.
+
 ## Novità della versione 0.9.5
 
 * **Nessuna nota resta accesa** cambiando il canale MIDI di una voce o

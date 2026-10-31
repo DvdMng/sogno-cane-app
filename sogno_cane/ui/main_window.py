@@ -7,6 +7,7 @@ import time
 
 import numpy as np
 from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QGuiApplication
 import os
 
 from PySide6.QtWidgets import (
@@ -31,8 +32,15 @@ from sogno_cane.io.archive import Archive
 from sogno_cane.settings import Settings
 from sogno_cane.ui.archive_panel import ArchivePanel
 from sogno_cane.ui.device_panel import DevicePanel
+from sogno_cane.ui.landscape_view import LandscapeView
 from sogno_cane.ui.mapping_panel import MappingPanel
 from sogno_cane.ui.midi_monitor import MidiMonitor
+from sogno_cane.ui.projection import (
+    ProjectionControls,
+    ProjectionSettings,
+    ProjectionWindow,
+    find_screen,
+)
 from sogno_cane.ui.theme import (
     ACCENT_CYAN,
     ACCENT_PINK,
@@ -97,6 +105,16 @@ class MainWindow(QMainWindow):
         self._human.recording_changed.connect(self._sync_record_button)
         self._dog.recording_changed.connect(self._sync_record_button)
         self._tabs.currentChanged.connect(self._on_tab_changed)
+
+        # Projection on a second screen (window and its control panel).
+        self._projection: ProjectionWindow | None = None
+        self._projection_controls: ProjectionControls | None = None
+        self._projection_settings = ProjectionSettings.from_dict(
+            self._settings.get("projection", "settings", default={})
+        )
+        app = QGuiApplication.instance()
+        if app is not None:
+            app.screenRemoved.connect(self._on_screen_removed)
 
         # Spectrum refresh timer.
         self._human_window_buf: list[np.ndarray] = []
@@ -175,20 +193,41 @@ class MainWindow(QMainWindow):
         self._monitor.setMinimumHeight(48)
         mon_v.addWidget(self._monitor, 1)
 
+        # The combined perspective view of both EEGs: hidden until VISTA 3D,
+        # then it takes the place of the two trace views.
+        self._landscape = LandscapeView(
+            {"human": self._human.profile, "dog": self._dog.profile},
+        )
+        self._landscape.hide()
+
         self._studio_split = QSplitter(Qt.Orientation.Vertical)
         self._studio_split.setHandleWidth(8)
         self._studio_split.addWidget(top)
+        self._studio_split.addWidget(self._landscape)
         self._studio_split.addWidget(mon_wrap)
         self._studio_split.setStretchFactor(0, 5)
-        self._studio_split.setStretchFactor(1, 1)
-        self._studio_split.setSizes([760, 110])
+        self._studio_split.setStretchFactor(1, 6)
+        self._studio_split.setStretchFactor(2, 1)
+        self._studio_split.setSizes([760, 0, 110])
         v.addWidget(self._studio_split, 1)
+
+        self._landscape_timer = QTimer(self)
+        self._landscape_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._landscape_timer.setInterval(16)
+        self._landscape_timer.timeout.connect(self._landscape.advance)
 
         # Wire device events.
         self._human.packet_received.connect(self._on_human_packet)
         self._dog.packet_received.connect(self._on_dog_packet)
         self._human.event_emitted.connect(self._monitor.push_event)
         self._dog.event_emitted.connect(self._monitor.push_event)
+        for kind, panel in (("human", self._human), ("dog", self._dog)):
+            panel.visible_channels_changed.connect(
+                lambda chans, k=kind: self._on_visible_channels(k, chans)
+            )
+            panel.profile_changed.connect(
+                lambda prof, k=kind: self._on_panel_profile(k, prof)
+            )
         return studio
 
     def _build_mapping(self) -> QWidget:
@@ -275,7 +314,11 @@ class MainWindow(QMainWindow):
         self._rec_both_btn.clicked.connect(self._toggle_record_both)
         bar.addWidget(self._rec_both_btn)
         panic = QPushButton("PANIC")
-        panic.setToolTip("Manda All-Notes-Off su tutti i canali MIDI.")
+        panic.setToolTip(
+            "Spegne ogni nota su tutte le porte MIDI collegate: un note-off\n"
+            "per ogni nota di ogni canale, poi Sustain off e All Notes Off.\n"
+            "Spegne anche le note rimaste accese da una sessione precedente."
+        )
         panic.clicked.connect(self._panic)
         bar.addWidget(panic)
         swap = QPushButton("SCAMBIA EEG")
@@ -285,6 +328,23 @@ class MainWindow(QMainWindow):
         )
         swap.clicked.connect(self._swap_live_eeg)
         bar.addWidget(swap)
+        self._view3d_btn = QPushButton("VISTA 3D")
+        self._view3d_btn.setCheckable(True)
+        self._view3d_btn.setToolTip(
+            "Mostra le onde dell'uomo e del cane insieme, in prospettiva,\n"
+            "al posto delle due tracce. Premi di nuovo per tornare alle\n"
+            "tracce."
+        )
+        self._view3d_btn.toggled.connect(self._set_view_3d)
+        bar.addWidget(self._view3d_btn)
+        self._projection_btn = QPushButton("PROIEZIONE")
+        self._projection_btn.setToolTip(
+            "Proietta le onde su un secondo schermo (il proiettore, collegato\n"
+            "in modalità Estendi) mentre l'app resta qui. Apre il pannello\n"
+            "della proiezione: schermo, tutto schermo, contenuto e resa."
+        )
+        self._projection_btn.clicked.connect(self._show_projection_controls)
+        bar.addWidget(self._projection_btn)
         bar.addStretch(1)
         self._cfg_studio_lbl = QLabel("")
         self._cfg_studio_lbl.setToolTip(
@@ -439,6 +499,21 @@ class MainWindow(QMainWindow):
             "  Dice sempre la verità su cosa entra e cosa esce: verde tutto\n"
             "  a posto, rosa qualcosa non va (nessun dato EEG, MIDI non\n"
             "  collegato, invii falliti).\n\n"
+            "VEDERE LE ONDE\n"
+            "  • ONDE accanto al nome del pannello sceglie quali onde\n"
+            "    mostrare (per esempio le 4 collegate all'amplificatore del\n"
+            "    cane). Vale per la visualizzazione, non per il MIDI.\n"
+            "  • VISTA 3D, in alto, mostra le onde dell'uomo e del cane\n"
+            "    insieme, in prospettiva: il presente in primo piano, il\n"
+            "    passato che si allontana e svanisce.\n"
+            "  • PROIEZIONE porta le onde sul proiettore collegato in\n"
+            "    modalità Estendi (Windows: Win+P, Estendi) mentre l'app\n"
+            "    resta qui. Dal suo pannello: schermo, tutto schermo,\n"
+            "    vista 3D o tracce, disposizione, secondi, ampiezza.\n\n"
+            "NOTE CHE RESTANO ACCESE\n"
+            "  PANIC manda un note-off per ogni nota di ogni canale: spegne\n"
+            "  anche le note rimaste appese in Ableton da una sessione\n"
+            "  precedente, senza riavviarlo.\n\n"
             "REGISTRARE E RIASCOLTARE\n"
             "  • ● REGISTRA su un pannello registra quel pannello.\n"
             "  • ● REGISTRA UOMO+CANE, in alto, avvia le due registrazioni\n"
@@ -462,6 +537,9 @@ class MainWindow(QMainWindow):
             "    regolano quanto è rada ogni voce;\n"
             "  • 'note length' quanto dura ogni nota (15 ms = trigger per\n"
             "    gli inviluppi, 0 = HOLD legato);\n"
+            "  • nei CC, «uscita» sceglie il tratto del parametro percorso\n"
+            "    (per esempio 30–90) e «morbidezza» quanto il movimento è\n"
+            "    lento, con il tempo di risposta indicato accanto;\n"
             "  • 'max silence' fa ripartire una voce rimasta muta troppo a\n"
             "    lungo, così nessun canale MIDI muore.",
         )
@@ -766,8 +844,98 @@ class MainWindow(QMainWindow):
     # Spectrum                                                           #
     # ------------------------------------------------------------------ #
 
+    # ------------------------------------------------------------------ #
+    # Combined 3D view and projection                                    #
+    # ------------------------------------------------------------------ #
+
+    def _set_view_3d(self, on: bool) -> None:
+        """The perspective view in place of the two trace views."""
+        on = bool(on)
+        if self._view3d_btn.isChecked() != on:
+            self._view3d_btn.setChecked(on)        # re-enters with the same on
+            return
+        self._human.set_waveform_visible(not on)
+        self._dog.set_waveform_visible(not on)
+        self._landscape.setVisible(on)
+        if on:
+            sizes = self._studio_split.sizes()
+            total = sum(sizes)
+            self._studio_split.setSizes(
+                [int(total * 0.30), int(total * 0.58), int(total * 0.12)]
+            )
+            self._landscape_timer.start()
+        else:
+            self._landscape_timer.stop()
+
+    def _feed_views(self, kind: str, packet: UnicornPacket) -> None:
+        if self._landscape.isVisible():
+            self._landscape.push(kind, packet)
+        if self._projection is not None:
+            self._projection.push(kind, packet)
+
+    def _on_visible_channels(self, kind: str, chans: list) -> None:
+        self._landscape.set_visible_channels(kind, chans)
+        if self._projection is not None:
+            self._projection.set_visible_channels(kind, chans)
+
+    def _on_panel_profile(self, kind: str, profile) -> None:
+        self._landscape.set_profile(kind, profile)
+        if self._projection is not None:
+            self._projection.set_profile(kind, profile)
+
+    def _show_projection_controls(self) -> None:
+        if self._projection_controls is None:
+            ctl = ProjectionControls(self._projection_settings, self)
+            ctl.settings_changed.connect(self._on_projection_settings)
+            ctl.toggle_requested.connect(self._toggle_projection)
+            self._projection_controls = ctl
+        self._projection_controls.set_projecting(self._projection is not None)
+        self._projection_controls.show()
+        self._projection_controls.raise_()
+
+    def _toggle_projection(self) -> None:
+        if self._projection is not None:
+            self._projection.close()
+            return
+        settings = self._projection_controls.settings() \
+            if self._projection_controls is not None \
+            else self._projection_settings
+        self._projection_settings = settings
+        win = ProjectionWindow(
+            {"human": self._human.profile, "dog": self._dog.profile},
+            settings,
+            {"human": self._human.visible_channels(),
+             "dog": self._dog.visible_channels()},
+        )
+        win.closed.connect(self._on_projection_closed)
+        self._projection = win
+        win.place(find_screen(settings.screen))
+        self._sync_projection_ui()
+
+    def _on_projection_settings(self, settings: ProjectionSettings) -> None:
+        self._projection_settings = settings
+        if self._projection is not None:
+            self._projection.apply(settings)
+
+    def _on_projection_closed(self) -> None:
+        self._projection = None
+        self._sync_projection_ui()
+
+    def _sync_projection_ui(self) -> None:
+        on = self._projection is not None
+        self._projection_btn.setText("PROIEZIONE ●" if on else "PROIEZIONE")
+        if self._projection_controls is not None:
+            self._projection_controls.set_projecting(on)
+
+    def _on_screen_removed(self, screen) -> None:
+        """The projector was unplugged: close what was shown on it."""
+        if self._projection is not None and \
+                self._projection.screen() is screen:
+            self._projection.close()
+
     def _on_human_packet(self, packet: UnicornPacket) -> None:
         self._human.push_packet_to_waveform(packet)
+        self._feed_views("human", packet)
         self._human_window_buf.append(packet.eeg.astype(np.float64))
         total = sum(a.shape[0] for a in self._human_window_buf)
         win = packet.sample_rate
@@ -779,6 +947,7 @@ class MainWindow(QMainWindow):
 
     def _on_dog_packet(self, packet: UnicornPacket) -> None:
         self._dog.push_packet_to_waveform(packet)
+        self._feed_views("dog", packet)
         self._dog_window_buf.append(packet.eeg.astype(np.float64))
         total = sum(a.shape[0] for a in self._dog_window_buf)
         win = packet.sample_rate
@@ -829,6 +998,11 @@ class MainWindow(QMainWindow):
                 dev._loop_cb.setChecked(bool(loop))
             except Exception:
                 pass
+            shown = self._settings.get(key, "visible_channels", default=None)
+            if isinstance(shown, list) and shown:
+                dev.set_visible_channels(shown)
+        if self._settings.get("display", "view_3d", default=False):
+            self._set_view_3d(True)
 
     def _save_settings(self) -> None:
         self._settings.set("window", "w", self.width())
@@ -837,11 +1011,21 @@ class MainWindow(QMainWindow):
             self._settings.set(key, "profile", dev.profile.name)
             self._settings.set(key, "port", dev.current_port_name())
             self._settings.set(key, "loop", dev._loop_cb.isChecked())
+            self._settings.set(key, "visible_channels",
+                               dev.visible_channels())
+        self._settings.set("display", "view_3d",
+                           self._view3d_btn.isChecked())
+        self._settings.set("projection", "settings",
+                           self._projection_settings.to_dict())
         self._settings.save()
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt name
         self._save_settings()
         self._save_session()
+        if self._projection is not None:
+            self._projection.close()
+        if self._projection_controls is not None:
+            self._projection_controls.close()
         self._human.shutdown()
         self._dog.shutdown()
         super().closeEvent(event)

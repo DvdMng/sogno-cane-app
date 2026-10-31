@@ -30,6 +30,10 @@ class PerChannelCCConfig:
     log_ceiling: float = 3.0
     smoothing: float = 0.5
     invert: bool = False
+    # Range of values sent: the parameter it drives moves only between
+    # these two (0-127 = the whole range).
+    out_min: int = 0
+    out_max: int = 127
     adaptive: bool = True
     min_interval_seconds: float = 0.04
     min_delta: int = 1
@@ -138,8 +142,7 @@ class PerChannelCCStrategy:
         smoothed = voice.smoothing * prev + (1.0 - voice.smoothing) * norm
         self._smoothed[voice.eeg_channel] = smoothed
 
-        cc_val = int(round(smoothed * 127.0))
-        cc_val = max(0, min(127, cc_val))
+        cc_val = _to_range(smoothed, voice.out_min, voice.out_max)
         key = (voice.midi_channel, voice.cc_number)
 
         last = self._last_cc.get(key)
@@ -175,3 +178,10 @@ class PerChannelCCStrategy:
 
     def shutdown(self) -> list[MappingEvent]:
         return []
+
+
+def _to_range(level: float, out_min: int, out_max: int) -> int:
+    """0..1 onto the chosen stretch of 0..127."""
+    lo = max(0, min(127, int(out_min)))
+    hi = max(0, min(127, int(out_max)))
+    return int(round(lo + max(0.0, min(1.0, level)) * (hi - lo)))

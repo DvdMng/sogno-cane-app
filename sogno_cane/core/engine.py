@@ -92,6 +92,22 @@ class NoteOffScheduler:
         for ch, n in pending:
             self._emit(ch, n)
 
+    def release_now(self, channel: int, note: int) -> None:
+        """Send now the pending note_off of (channel, note), if any.
+
+        Called before the same note is struck again: the previous one is
+        closed first, so the synth never sees two note-ons in a row.
+        """
+        with self._cond:
+            if not any(e[2] == channel and e[3] == note for e in self._heap):
+                return
+            self._heap = [
+                e for e in self._heap
+                if not (e[2] == channel and e[3] == note)
+            ]
+            heapq.heapify(self._heap)
+            self._emit(channel, note)
+
     def stop(self, flush: bool = True) -> None:
         """Stop accepting work; optionally flush what is still pending."""
         with self._cond:
@@ -129,7 +145,9 @@ class NoteOffScheduler:
                     self._worker_exited = True
                     return
                 _due, _seq, channel, note = heapq.heappop(self._heap)
-            self._emit(channel, note)
+                # Sent under the lock, so release_now() can never slip a
+                # new note-on between this pop and its note-off.
+                self._emit(channel, note)
 
 
 class RealtimeEngine:
@@ -240,7 +258,11 @@ class RealtimeEngine:
         # Strategies are shared live objects that may carry gate/throttle
         # timestamps from a previous engine (whose clock ran far ahead of
         # this one, which starts at zero). Clear them or voices stay mute
-        # for up to the previous run's duration.
+        # for up to the previous run's duration. A note one of them still
+        # holds (a run that did not end with stop()) is released first:
+        # forgetting it would leave it on at the synth.
+        for ev in self._mapper.shutdown():
+            self._dispatch_event(ev)
         self._mapper.reset_strategy_state()
         self._stop_event.clear()
         self._running = True
@@ -262,6 +284,17 @@ class RealtimeEngine:
         # itself (in that case _running is False but short notes may still
         # be pending on the wall-clock scheduler).
         self._noteoff.stop(flush=True)
+        self._release_output()
+
+    def _release_output(self) -> None:
+        """Explicit note-off for anything the output still has on."""
+        release = getattr(self._midi, "release_all", None)
+        if release is None:
+            return
+        try:
+            release()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ #
     # Loop                                                                #
@@ -297,6 +330,7 @@ class RealtimeEngine:
                 # finished playback does not leak it. The scheduler revives
                 # automatically if this engine is ever started again.
                 self._noteoff.stop(flush=True)
+                self._release_output()
                 if self._on_finished is not None:
                     try:
                         self._on_finished()
@@ -309,6 +343,8 @@ class RealtimeEngine:
                 except Exception:
                     pass
             for ev in self._mapper.process_packet(packet):
+                if ev.kind == "note_on" and self._stop_event.is_set():
+                    continue        # stopping: nothing new may start
                 self._dispatch_event(ev)
             if self_clocked:
                 continue
@@ -330,6 +366,9 @@ class RealtimeEngine:
             except Exception:
                 pass
         if ev.kind == "note_on":
+            # A short note of the same pitch may still be waiting for its
+            # note-off: send it first, never two note-ons in a row.
+            self._noteoff.release_now(ev.channel, ev.note)
             self._midi.send_note_on(ev.note, ev.velocity, ev.channel)
             if ev.duration > 0.0:
                 # Gated note: the engine owns the release. Scale with the

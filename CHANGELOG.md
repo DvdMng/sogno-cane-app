@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.9.6 — note che restano accese, uscita dei CC, vista 3D e proiezione
+Richieste dal campo.
+
+- **Note accese fino al riavvio di Ableton.** PANIC, la chiusura della
+  porta MIDI e la riconnessione dopo un blocco della porta mandavano solo
+  All Notes Off (CC 123), che Ableton e molti strumenti non rispettano:
+  una nota il cui note-off andava perso (porta loopMIDI bloccata, porta
+  chiusa durante una nota) restava accesa. Ora l'app tiene il conto delle
+  note accese su ogni porta e le chiude con note-off espliciti: allo stop,
+  alla chiusura della porta, alla riconnessione e al primo invio che torna
+  a passare dopo un blocco. PANIC manda un note-off per ogni nota di ogni
+  canale, poi Sustain off, All Sound Off e All Notes Off: spegne anche le
+  note rimaste da una sessione precedente o da un arresto improvviso.
+  Inoltre una nota non viene più accesa due volte di seguito senza note-off
+  in mezzo (un synth che impila le voci ne teneva una) e all'avvio si
+  chiudono le note che una voce ricordava ancora da un'esecuzione
+  interrotta.
+- **CC: tratto di uscita e morbidezza al centesimo.** In CC PER CANALE e in
+  COERENZA, «uscita da … a …» sceglie il tratto percorso dal parametro
+  (per esempio 30–90 invece di 0–127). La morbidezza si regola al
+  centesimo e accanto ne compare il tempo di risposta (0,93: circa 1,4 s).
+- **ONDE.** Accanto al nome di ogni pannello si scelgono gli elettrodi da
+  disegnare, per esempio le 4 uscite dell'amplificatore del cane; «Mostra
+  tutte» torna agli 8. Riguarda la visualizzazione, non il MIDI, e resta
+  alla riapertura.
+- **VISTA 3D.** Le onde dell'uomo e del cane insieme, in prospettiva: il
+  presente in primo piano, il passato che si allontana verso un punto di
+  fuga e si dissolve, rosa e ciano alternati come nelle tracce, punto di
+  vista in lento movimento. Prende il posto delle due tracce nella scheda
+  STUDIO.
+- **PROIEZIONE.** Una finestra a sé, a tutto schermo sul proiettore
+  collegato in modalità Estendi (Windows: Win+P, Estendi), mentre l'app
+  resta sullo schermo del PC; si apre senza togliere il fuoco all'app. Dal
+  suo pannello si sceglie, anche durante la proiezione: schermo, tutto
+  schermo o finestra, vista 3D o tracce, disposizione, secondi visibili,
+  ampiezza, scritte, movimento del punto di vista. Con un solo schermo si
+  apre in una finestra; se il proiettore viene scollegato si chiude.
+
+Test: +28, **308 totali**.
+
 ## 0.9.5 — le voci della MAPPATURA verificate caso per caso
 Verifica di ogni comando descritto nella MAPPATURA sul motore dell'app, con
 le registrazioni ufficiali della BCI Core-8, il simulatore umano e cane e

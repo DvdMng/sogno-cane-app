@@ -20,8 +20,10 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QMenu,
     QMessageBox,
     QPushButton,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -115,6 +117,8 @@ class DevicePanel(QWidget):
     recording_saved = Signal(str)            # rec_id
     recording_changed = Signal(bool)         # recording started / stopped
     source_finished = Signal()               # non-looping playback ended
+    visible_channels_changed = Signal(list)  # electrode indices on screen
+    profile_changed = Signal(object)         # DeviceProfile
 
     def __init__(
         self,
@@ -169,6 +173,25 @@ class DevicePanel(QWidget):
         header = QLabel(title)
         header.setObjectName("SubHeaderDog" if is_dog else "SubHeaderHuman")
         header_row.addWidget(header)
+        # Which electrodes are drawn: a headset wired on fewer inputs (the
+        # dog's amplifier uses 4) shows only those, the rest is noise.
+        self._chan_btn = QToolButton()
+        self._chan_btn.setPopupMode(
+            QToolButton.ToolButtonPopupMode.InstantPopup
+        )
+        self._chan_btn.setToolTip(
+            "Quali onde mostrare. Serve quando sono collegati meno di 8\n"
+            "elettrodi: gli ingressi liberi danno solo rumore. Riguarda la\n"
+            "visualizzazione (qui, vista 3D, proiezione), non il MIDI."
+        )
+        self._chan_menu = QMenu(self._chan_btn)
+        self._chan_btn.setMenu(self._chan_menu)
+        self._visible: list[int] = list(range(
+            len(self._profile.channel_names)
+        ))
+        header_row.addSpacing(10)
+        header_row.addWidget(self._chan_btn)
+        self._build_channel_menu()
         header_row.addStretch(1)
         self._status = QLabel("FERMO")
         self._status.setStyleSheet(f"color: {FG_DIM};")
@@ -345,9 +368,9 @@ class DevicePanel(QWidget):
         return self._port_cb.currentText()
 
     def panic(self) -> None:
-        """All-notes-off on every channel."""
+        """A note-off for every note on every channel of this port."""
         try:
-            self._midi.all_notes_off()
+            self._midi.panic()
         except Exception:
             pass
 
@@ -422,12 +445,74 @@ class DevicePanel(QWidget):
             self._stop_engine()
         self._profile = ALL_PROFILES[profile_name]
         idx = self.layout().indexOf(self._waveform)
+        shown = self._waveform.isVisibleTo(self)
         self.layout().removeWidget(self._waveform)
         self._waveform.deleteLater()
         self._waveform = WaveformWidget(self._profile)
+        self._waveform.setVisible(shown)
         self.layout().insertWidget(idx, self._waveform, 1)
+        self._build_channel_menu()
+        self.set_visible_channels(self._visible)
+        self.profile_changed.emit(self._profile)
         if was_running:
             self._start_engine()
+
+    # ------------------------------------------------------------------ #
+    # Visible channels                                                   #
+    # ------------------------------------------------------------------ #
+
+    def _build_channel_menu(self) -> None:
+        self._chan_menu.clear()
+        self._chan_actions = []
+        for i, name in enumerate(self._profile.channel_names):
+            act = self._chan_menu.addAction(f"{i + 1}   {name}")
+            act.setCheckable(True)
+            act.setChecked(i in self._visible)
+            act.toggled.connect(lambda _on: self._on_channel_toggled())
+            self._chan_actions.append(act)
+        self._chan_menu.addSeparator()
+        all_act = self._chan_menu.addAction("Mostra tutte")
+        all_act.triggered.connect(
+            lambda: self.set_visible_channels(
+                range(len(self._profile.channel_names))
+            )
+        )
+        self._update_channel_button()
+
+    def _on_channel_toggled(self) -> None:
+        chosen = [i for i, a in enumerate(self._chan_actions) if a.isChecked()]
+        if not chosen:
+            # At least one wave stays: put back the one just unticked.
+            self._update_channel_checks()
+            return
+        self.set_visible_channels(chosen)
+
+    def _update_channel_checks(self) -> None:
+        for i, act in enumerate(self._chan_actions):
+            act.blockSignals(True)
+            act.setChecked(i in self._visible)
+            act.blockSignals(False)
+
+    def _update_channel_button(self) -> None:
+        n = len(self._profile.channel_names)
+        self._chan_btn.setText(f"ONDE {len(self._visible)}/{n}")
+
+    def visible_channels(self) -> list[int]:
+        return list(self._visible)
+
+    def set_visible_channels(self, indices) -> None:
+        """Draw only these electrodes (all if the selection is empty)."""
+        n = len(self._profile.channel_names)
+        chosen = sorted({int(i) for i in indices if 0 <= int(i) < n})
+        self._visible = chosen or list(range(n))
+        self._update_channel_checks()
+        self._update_channel_button()
+        self._waveform.set_visible_channels(self._visible)
+        self.visible_channels_changed.emit(list(self._visible))
+
+    def set_waveform_visible(self, visible: bool) -> None:
+        """Hide the trace view (the combined 3D view takes its place)."""
+        self._waveform.setVisible(visible)
 
     def _on_loop_toggled(self, v: bool) -> None:
         self._loop_playback = bool(v)

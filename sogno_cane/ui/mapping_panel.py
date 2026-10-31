@@ -7,6 +7,8 @@ apply our fixes in any order (or partially) without bricking the UI.
 """
 from __future__ import annotations
 
+import math
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -15,6 +17,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGridLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QScrollArea,
     QSpinBox,
@@ -46,10 +49,91 @@ _ELECTRODES_TIP = (
 _MIDI_CH_TIP = "Canale MIDI di uscita (1–16, come in Ableton)."
 
 _SMOOTH_TIP = (
-    "Quanto lisciare il valore prima di mandarlo:\n"
-    "0 = segue subito ogni oscillazione (movimento nervoso);\n"
-    "0,9 o più = si muove lentamente e dolcemente."
+    "Quanto lisciare il valore prima di mandarlo. Accanto, il tempo in cui\n"
+    "il CC compie circa due terzi di un cambiamento:\n"
+    "0 = immediato (movimento nervoso) · 0,90 ≈ 1 s · 0,95 ≈ 2 s ·\n"
+    "0,99 ≈ 10 s (lento e dolce). Si regola al centesimo."
 )
+
+_RANGE_TIP = (
+    "Il tratto del parametro che il CC percorre: il valore più basso e il\n"
+    "più alto inviati (0–127 = tutto). Per esempio 30–90: il filtro o la\n"
+    "manopola del synth si muove solo fra 30 e 90. Per invertire il verso\n"
+    "c'è «inverti»."
+)
+
+# The engine re-reads the EEG every 0.1 s: the smoothing applies per step.
+_HOP_S = 0.1
+
+
+def _response_time_text(smoothing: float) -> str:
+    """How long the smoothed CC takes for about 2/3 of a change."""
+    s = max(0.0, min(0.999, float(smoothing)))
+    if s <= 0.0:
+        return "risposta immediata"
+    tau = -_HOP_S / math.log(s)
+    if tau < 0.1:
+        return "risposta immediata"
+    return f"risposta in circa {tau:.1f} s".replace(".", ",")
+
+
+def _smoothing_controls(obj, set_safe, default: float) -> QWidget:
+    """Morbidezza to the hundredth, with its response time beside it."""
+    box = QWidget()
+    row = QHBoxLayout(box)
+    row.setContentsMargins(0, 0, 0, 0)
+    sb = QDoubleSpinBox()
+    sb.setRange(0.0, 0.99)
+    sb.setSingleStep(0.01)
+    sb.setDecimals(2)
+    sb.setValue(float(getattr(obj, "smoothing", default)))
+    sb.setToolTip(_SMOOTH_TIP)
+    info = QLabel(_response_time_text(sb.value()))
+    info.setStyleSheet("color: #7F7298;")
+
+    def changed(v):
+        set_safe(obj, "smoothing", float(v))
+        info.setText(_response_time_text(v))
+
+    sb.valueChanged.connect(changed)
+    row.addWidget(sb)
+    row.addWidget(info, 1)
+    return box
+
+
+def _range_controls(obj, set_safe) -> QWidget:
+    """«uscita da … a …»: the stretch of 0..127 a CC is mapped onto."""
+    box = QWidget()
+    row = QHBoxLayout(box)
+    row.setContentsMargins(0, 0, 0, 0)
+    lo = QSpinBox()
+    hi = QSpinBox()
+    lo.setRange(0, 127)
+    hi.setRange(0, 127)
+    lo.setValue(int(getattr(obj, "out_min", 0)))
+    hi.setValue(int(getattr(obj, "out_max", 127)))
+    for sb in (lo, hi):
+        sb.setToolTip(_RANGE_TIP)
+    # Never crossed: the low end stays at or below the high one.
+    lo.setMaximum(hi.value())
+    hi.setMinimum(lo.value())
+
+    def lo_changed(v):
+        set_safe(obj, "out_min", int(v))
+        hi.setMinimum(int(v))
+
+    def hi_changed(v):
+        set_safe(obj, "out_max", int(v))
+        lo.setMaximum(int(v))
+
+    lo.valueChanged.connect(lo_changed)
+    hi.valueChanged.connect(hi_changed)
+    row.addWidget(QLabel("da"))
+    row.addWidget(lo)
+    row.addWidget(QLabel("a"))
+    row.addWidget(hi)
+    row.addStretch(1)
+    return box
 
 
 def _about(text: str) -> QLabel:
@@ -392,9 +476,11 @@ class MappingPanel(QWidget):
         layout.addWidget(_about(
             "Ogni elettrodo genera un controllo continuo (Control Change) che "
             "segue la potenza della banda selezionata, letta rispetto al suo "
-            "andamento recente, con valori da 0 a 127. Predefiniti: CC 20–27 "
-            "sul canale MIDI 13. In Ableton si assegnano ai parametri con la "
-            "MIDI Map. Senza segnale il controllo resta all'ultimo valore."
+            "andamento recente. «uscita» sceglie il tratto percorso (0–127 "
+            "tutto, oppure per esempio 30–90), «morbidezza» quanto il "
+            "movimento è lento. Predefiniti: CC 20–27 sul canale MIDI 13. In "
+            "Ableton si assegnano ai parametri con la MIDI Map. Senza segnale "
+            "il controllo resta all'ultimo valore."
         ))
         enable = QCheckBox("ATTIVA CC PER CANALE")
         enable.setChecked(getattr(strategy, "enabled", False))
@@ -453,16 +539,11 @@ class MappingPanel(QWidget):
             )
             grid.addWidget(inv_cb, 1, 3)
 
-            sm = QDoubleSpinBox()
-            sm.setRange(0.0, 0.99)
-            sm.setSingleStep(0.05)
-            sm.setValue(float(getattr(v, "smoothing", 0.7)))
-            sm.setToolTip(_SMOOTH_TIP)
-            sm.valueChanged.connect(
-                lambda val, vc=v: self._set_safe(vc, "smoothing", val)
-            )
             grid.addWidget(QLabel("morbidezza"), 1, 4)
-            grid.addWidget(sm, 1, 5)
+            grid.addWidget(_smoothing_controls(v, self._set_safe, 0.5), 1, 5)
+
+            grid.addWidget(QLabel("uscita"), 2, 1)
+            grid.addWidget(_range_controls(v, self._set_safe), 2, 2, 1, 4)
 
             layout.addWidget(box)
         layout.addStretch(1)
@@ -603,18 +684,14 @@ class MappingPanel(QWidget):
         ch.valueChanged.connect(lambda v: self._set_safe(s, "channel", v - 1))
         layout.addRow("canale midi", ch)
 
-        sm = QDoubleSpinBox()
-        sm.setRange(0.0, 0.99)
-        sm.setSingleStep(0.05)
-        sm.setValue(float(getattr(s, "smoothing", 0.6)))
+        sm = _smoothing_controls(s, self._set_safe, 0.4)
         sm.setToolTip(
-            "Quanto lisciare il valore prima di mandarlo. La coerenza è già\n"
-            "una misura sugli ultimi 4 secondi e scende comunque con\n"
-            "gradualità: la morbidezza rallenta soprattutto le salite\n"
-            "(0 = immediate, 0,95 = circa 2 secondi)."
+            "La coerenza è già una misura sugli ultimi 4 secondi e scende\n"
+            "comunque con gradualità: la morbidezza rallenta soprattutto le\n"
+            "salite."
         )
-        sm.valueChanged.connect(lambda v: self._set_safe(s, "smoothing", v))
         layout.addRow("morbidezza", sm)
+        layout.addRow("uscita", _range_controls(s, self._set_safe))
         return w
 
     def _build_markov_tab(self) -> QWidget:

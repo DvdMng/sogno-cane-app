@@ -218,6 +218,7 @@ class WaveformWidget(QWidget):
 
         palette = _palette(len(profile.channel_names))
         self._curves: list[pg.PlotDataItem] = []
+        self._labels: list[pg.TextItem] = []
         for i, ch_name in enumerate(profile.channel_names):
             # 1 px: Qt's fast path (see the module notes).
             pen = pg.mkPen(palette[i], width=1.0)
@@ -228,6 +229,12 @@ class WaveformWidget(QWidget):
             )
             label.setPos(2, i * self._stride_uv)
             self._plot.addItem(label)
+            self._labels.append(label)
+        # Channels on screen (all by default); the others are hidden and
+        # the shown ones share the height.
+        self._visible = list(range(len(profile.channel_names)))
+        self._labels_on = True
+        self.gain = 1.0                  # trace height factor
 
         # The last n_visible samples, stored twice over so that the visible
         # window is always one contiguous slice: nothing is rebuilt per
@@ -255,6 +262,44 @@ class WaveformWidget(QWidget):
         eeg = self._cleaner.process(packet.eeg)
         self._playout.push(eeg, time.perf_counter())
 
+    def visible_channels(self) -> list[int]:
+        return list(self._visible)
+
+    def set_visible_channels(self, indices) -> None:
+        """Show only these channels, spread over the whole height.
+
+        An empty or invalid selection shows them all.
+        """
+        n_ch = len(self._curves)
+        chosen = sorted({int(i) for i in indices if 0 <= int(i) < n_ch})
+        self._visible = chosen or list(range(n_ch))
+        slot = {ch: k for k, ch in enumerate(self._visible)}
+        for ch, (curve, label) in enumerate(zip(self._curves, self._labels)):
+            shown = ch in slot
+            curve.setVisible(shown)
+            label.setVisible(shown and self._labels_on)
+            if shown:
+                self._offsets[ch] = slot[ch] * self._stride_uv
+                label.setPos(2, slot[ch] * self._stride_uv)
+        self._plot.setYRange(
+            -self._stride_uv, self._stride_uv * len(self._visible),
+        )
+        self._draw()
+
+    def set_axes_visible(self, on: bool) -> None:
+        """The thin axis lines (off for projection)."""
+        for side in ("left", "bottom"):
+            if on:
+                self._plot.showAxis(side)
+            else:
+                self._plot.hideAxis(side)
+
+    def set_labels_visible(self, on: bool) -> None:
+        """Show or hide the electrode names."""
+        self._labels_on = bool(on)
+        for ch, label in enumerate(self._labels):
+            label.setVisible(self._labels_on and ch in self._visible)
+
     def repaint_traces(self) -> None:
         """Advance the traces by what this frame should reveal."""
         rows = self._playout.take(time.perf_counter())
@@ -262,12 +307,17 @@ class WaveformWidget(QWidget):
             return                   # nothing new: leave the picture alone
         self._shown_total += rows.shape[0]
         self._append(rows)
+        self._draw()
+
+    def _draw(self) -> None:
         n = self._n_visible
         window = self._ring[self._head:self._head + n]   # oldest -> newest
-        for ch, curve in enumerate(self._curves):
+        for ch in self._visible:
             # The cleaner never outputs NaN/inf: skip pyqtgraph's check.
-            curve.setData(self._x_axis, window[:, ch] + self._offsets[ch],
-                          skipFiniteCheck=True)
+            self._curves[ch].setData(
+                self._x_axis, window[:, ch] * self.gain + self._offsets[ch],
+                skipFiniteCheck=True,
+            )
 
     def _append(self, rows: np.ndarray) -> None:
         n = self._n_visible

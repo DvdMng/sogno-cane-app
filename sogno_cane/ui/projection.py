@@ -321,6 +321,7 @@ class ProjectionWindow(QWidget):
         profiles: dict[str, DeviceProfile],
         settings: ProjectionSettings,
         visible: dict[str, list[int]] | None = None,
+        navigation=None,
     ) -> None:
         super().__init__(None, Qt.WindowType.Window)
         self.setWindowTitle("SOGNO_CANE — proiezione")
@@ -335,6 +336,9 @@ class ProjectionWindow(QWidget):
         self._profiles = dict(profiles)
         self._settings = settings
         self._visible = {k: list(v) for k, v in (visible or {}).items()}
+        # The point of view of the 3D view, shared with STUDIO's when given:
+        # turned on the PC, turned here too.
+        self._navigation = navigation
         self._view = None              # the 3D view, when it is shown
         self._traces: dict[str, WaveformWidget] = {}
         self._box = QVBoxLayout(self)
@@ -382,6 +386,9 @@ class ProjectionWindow(QWidget):
                                        background=_BLACK)
             for kind, chans in self._visible.items():
                 view.set_visible_channels(kind, chans)
+            if self._navigation is not None:
+                view.navigation = self._navigation
+            view.reset_on_double_click = False     # here it closes
             self._view = view
             self._apply_live(s)
             self._box.addWidget(view)

@@ -84,20 +84,24 @@ _SAMPLES = 4                 # antialiasing: samples per pixel
 _MAX_COLUMNS = 1500          # columns along time at most (6 s at 250 Hz)
 _SECTION_S = 0.144           # a cross-section every so long (as before)
 _FLOATS = 7                  # x, height, slot, weight, r, g, b
-# Smoothing in time (Gaussian sigma): the strands keep what an EEG has up
-# to about 20 Hz, so its dense moments come through; the threads between
-# them a little less, so the fabric stays calm. Close enough that the
-# surface has no pleats where the two meet.
-_STRAND_SIGMA_S = 0.006
-_THREAD_SIGMA_S = 0.010
+# Smoothing in time (Gaussian sigma), barely: the strands keep what an EEG
+# has up to about 60 Hz, so a muscle burst or an interference comes
+# through as dense texture; the threads between them a little less. Close
+# enough that the surface has no pleats where the two meet.
+_STRAND_SIGMA_S = 0.002
+_THREAD_SIGMA_S = 0.004
 # The opaque surface lies this far (a share of the relief) under its own
 # lines: a ripple smaller than that does not cut a line behind it, a crest
 # does.
 _SINK = 0.06
-_SCALE_TIME_S = 6.0          # the amplitude scale follows slowly: a dense
-                             # burst keeps its size instead of being evened
+# The amplitude scale: the median of the recent activity (a burst or an
+# artefact barely moves it), followed over about 20 s. A chaotic moment
+# stays large against the calm instead of being scaled down to it.
+_SCALE_TIME_S = 20.0
+_TYPICAL = 5.9               # the usual activity sits where it did before
+_CEILING = 2.0               # the soft limit: twice the old maximum
 _SCALE_EVERY_S = 0.5
-_FIT_MARGIN = (0.90, 0.86)   # share of the frame the scene fills
+_FIT_MARGIN = (0.97, 0.94)   # share of the frame the scene fills
 
 _VERTEX = """
 attribute vec4 a_xhsw;
@@ -255,7 +259,7 @@ class _Feed:
         if self.filled == 0 or not self.visible:
             return 0.0
         recent = self._recent[:self.filled, self.visible]
-        return float(np.percentile(np.abs(recent), 90))
+        return float(np.median(np.abs(recent)))
 
 
 class _Scene:
@@ -290,6 +294,7 @@ class _Scene:
         self.show_labels = True
         self.gain = 1.0
         self.drift = True
+        self.navigation = lv.Navigation()
         self.bg = QColor(background)
         self._t0 = time.perf_counter()
         self._next_scale = 0.0
@@ -365,7 +370,8 @@ class _Scene:
                 else:
                     s = max(feed.scale, 1.0e-3)
                     raw = self._sums[k] / self.step
-                    self.values[k][pos] = np.tanh(raw / (2.4 * s))
+                    self.values[k][pos] = _CEILING * np.tanh(
+                        raw / (_TYPICAL * s * _CEILING))
                 self._sums[k][:] = 0.0
             self.count += 1
             self.partial = 0
@@ -454,17 +460,20 @@ class _Scene:
         relief = lv._MESH_RELIEF if self.shape == "mesh" else 1.0
         return lv._HEIGHT * self.gain * relief
 
-    def _camera(self, half: float, phase: float):
+    def _camera(self, half: float, phase: float, navigated: bool = True):
         """As the QPainter view: to one side, looking along the strands
-        into the past; higher for the surface (a three-quarter view)."""
+        into the past; higher for the surface (a three-quarter view). Then
+        turned as the user has turned it."""
         sway = math.sin(phase)
         target = np.array([0.35 * half, 0.0, 0.42 * lv._DEPTH])
         mesh = self.shape == "mesh"
         pos = np.array([
             -half - 3.2 + 1.4 * sway,
-            (5.2 if mesh else 2.3) + 0.35 * math.sin(phase * 0.7 + 1.0),
-            -6.0 if mesh else -4.6,
+            (4.4 if mesh else 2.3) + 0.35 * math.sin(phase * 0.7 + 1.0),
+            -5.6 if mesh else -4.6,
         ])
+        if navigated:
+            pos = self.navigation.orbit(pos, target)
         f = target - pos
         f /= np.linalg.norm(f)
         r = np.cross([0.0, 1.0, 0.0], f)
@@ -480,15 +489,18 @@ class _Scene:
         return (v @ r) / zc, (v @ u) / zc
 
     def _fit_to(self, half: float, w: int, h: int):
-        key = (w, h, round(half, 3), self.shape, round(self.gain, 3))
+        nav = self.navigation
+        key = (w, h, round(half, 3), self.shape, round(self.gain, 3),
+               round(nav.yaw, 3), round(nav.pitch, 3))
         if key == self._fit_key:
             return self._fit
+        # Framed as turned: the scene fills the frame at any angle.
         cam = self._camera(half, 0.0)
         amp = self._amp()
         corners = np.array([
             [x, y, z]
             for x in (-half, half)
-            for y in (-amp, amp)
+            for y in (-1.3 * amp, 1.3 * amp)     # room for a burst
             for z in (0.0, lv._DEPTH * 0.9)
         ])
         u, v = self._project(corners, cam)
@@ -696,7 +708,8 @@ class _Scene:
         phase = 2.0 * math.pi * (now - self._t0) / lv._DRIFT_PERIOD_S \
             if self.drift else 0.0
         cam = self._camera(half, phase)
-        scale, off_x, off_y = self._fit_to(half, w, h)
+        scale, off_x, off_y = self.navigation.frame(
+            self._fit_to(half, w, h), w, h)
         mesh = self.shape == "mesh" and len(strands) >= 2
         amp = self._amp()
         made = min(self.count, n)
@@ -841,6 +854,8 @@ class LandscapeGLView(_GLBase):
         # samples on some drivers (it got none here), and lines need them.
         self._msaa = None
         self._msaa_ok = True
+        self.reset_on_double_click = True
+        self._drag = None
         self.setMinimumHeight(180)
 
     # The settings the app changes live, kept by the scene.
@@ -853,6 +868,7 @@ class LandscapeGLView(_GLBase):
     show_labels = _get("show_labels")
     gain = _get("gain")
     drift = _get("drift")
+    navigation = _get("navigation")
     del _get
 
     def push(self, kind: str, packet: UnicornPacket) -> None:
@@ -862,6 +878,21 @@ class LandscapeGLView(_GLBase):
         """Ask for a frame; the data move on when it is drawn, so the
         time axis is where the clock says at that very moment."""
         self.update()
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt name
+        lv.nav_press(self, event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802 - Qt name
+        lv.nav_move(self, event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt name
+        lv.nav_release(self, event)
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
+        lv.nav_double_click(self, event)
+
+    def wheelEvent(self, event) -> None:  # noqa: N802 - Qt name
+        lv.nav_wheel(self, event)
 
     def set_profile(self, kind: str, profile: DeviceProfile) -> None:
         old = self._scene.feeds.get(kind)

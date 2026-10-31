@@ -40,6 +40,15 @@ disattivate) e **binario** a 17 float dell'Unicorn UDP Interface (Hybrid
 Black). Le registrazioni **CSV** e **BDF+** del Recorder si riproducono con
 **FILE**. Guida completa: `portable/EEG_COLLEGAMENTO.txt`.
 
+## Novità della versione 0.9.10
+
+* **Vista 3D navigabile**: trascina per ruotare, tasto destro per
+  spostare, rotella per avvicinare, doppio clic per l'inquadratura
+  iniziale; la proiezione segue lo stesso punto di vista.
+* **Vista 3D meno normalizzata**: momenti caotici, artefatti e
+  interferenze restano visibili e grandi anche nella mesh, con la stessa
+  fluidità.
+
 ## Novità della versione 0.9.9
 
 * **Vista 3D senza il blocco**: la forma MESH torna un tessuto libero con

@@ -470,6 +470,99 @@ def test_projection_opens_and_closes_from_the_app(app, tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# A navigable 3D view (0.9.10)                                                #
+# --------------------------------------------------------------------------- #
+
+
+def _drag(widget, start, end, button=None):
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QApplication
+    button = button or Qt.MouseButton.LeftButton
+    for kind, (x, y) in ((QEvent.Type.MouseButtonPress, start),
+                         (QEvent.Type.MouseMove, end),
+                         (QEvent.Type.MouseButtonRelease, end)):
+        pos = QPointF(x, y)
+        held = Qt.MouseButton.NoButton \
+            if kind == QEvent.Type.MouseButtonRelease else button
+        QApplication.sendEvent(widget, QMouseEvent(
+            kind, pos, widget.mapToGlobal(pos), button, held,
+            Qt.KeyboardModifier.NoModifier))
+
+
+def _wheel(widget, notches):
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QWheelEvent
+    from PySide6.QtWidgets import QApplication
+    pos = QPointF(widget.width() / 2, widget.height() / 2)
+    QApplication.sendEvent(widget, QWheelEvent(
+        pos, widget.mapToGlobal(pos), QPoint(0, 0),
+        QPoint(0, int(120 * notches)), Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase,
+        False))
+
+
+def _double_click(widget):
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QApplication
+    pos = QPointF(widget.width() / 2, widget.height() / 2)
+    QApplication.sendEvent(widget, QMouseEvent(
+        QEvent.Type.MouseButtonDblClick, pos, widget.mapToGlobal(pos),
+        Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier))
+
+
+def test_the_3d_view_turns_moves_and_comes_closer_with_the_mouse(app):
+    from PySide6.QtCore import Qt
+    from sogno_cane.ui.landscape_view import LandscapeView
+    view = LandscapeView({"human": HUMAN_PROFILE, "dog": DOG_PROFILE},
+                         background="#000000")
+    view.resize(800, 450)
+    view.drift = False
+    view.shape = "mesh"
+    _feed(view)
+    framed = view.grab().toImage()
+    _drag(view, (400, 220), (520, 260))                # turn
+    nav = view.navigation
+    assert nav.yaw != 0.0 and nav.pitch != 0.0
+    turned = view.grab().toImage()
+    assert turned != framed
+    _drag(view, (400, 220), (480, 220), Qt.MouseButton.RightButton)
+    assert nav.pan_x > 0.0                             # moved, right
+    _wheel(view, 3)
+    assert nav.zoom > 1.2                              # closer
+    _double_click(view)
+    assert nav.to_dict() == type(nav)().to_dict()      # framed again
+    assert view.grab().toImage() == framed
+
+
+def test_the_point_of_view_is_kept_and_the_projector_shares_it(app,
+                                                               tmp_path):
+    from sogno_cane.io.archive import Archive
+    from sogno_cane.ui.main_window import MainWindow
+    win = MainWindow(archive=Archive(root=str(tmp_path / "rec")))
+    win._landscape.navigation.turn(150.0, 40.0)
+    win._landscape.navigation.scale(4)
+    kept = win._landscape.navigation.to_dict()
+    win._show_projection_controls()
+    win._toggle_projection()
+    proj = win._projection
+    assert proj._view.navigation is win._landscape.navigation
+    win._landscape.navigation.move(0.1, 0.0)           # turned on the PC
+    assert proj._view.navigation.pan_x == 0.1          # and on the screen
+    _double_click(proj._view)                          # still closes it
+    _pump(30)
+    assert win._projection is None
+    assert win._landscape.navigation.pan_x == 0.1      # view untouched
+    win._landscape.navigation.move(-0.1, 0.0)
+    win.close()
+    again = MainWindow(archive=Archive(root=str(tmp_path / "rec")))
+    assert again._landscape.navigation.to_dict() == kept
+    again.close()
+
+
+# --------------------------------------------------------------------------- #
 # Narrow windows (0.9.7)                                                      #
 # --------------------------------------------------------------------------- #
 
@@ -493,12 +586,19 @@ def test_transport_row_wraps_instead_of_cutting_its_buttons(app, tmp_path):
     margins = win.width() - win._transport.width()
     one_line = row.sizeHint().width() + margins
     least = win.minimumSizeHint().width()
-    # Widths relative to the row itself: fonts differ with the platform.
-    for width, lines in ((one_line + 20, 1), (one_line - 40, 2),
-                         (least, None)):
+    # Widths relative to the row itself (fonts differ with the platform),
+    # and the rule checked on the width the row really got: one line
+    # exactly when it has room for one.
+    for width, lines in ((one_line + 200, 1), (one_line - 40, None),
+                         (least, 2)):
         win.resize(width, 880)
         _pump(30)
-        assert row.lines() == lines if lines else row.lines() >= 2, width
+        room = win._transport.width() >= row.sizeHint().width()
+        assert (row.lines() == 1) == room, (width, row.lines())
+        if lines == 1:
+            assert row.lines() == 1, width
+        elif lines:
+            assert row.lines() >= 2, width
         assert win._transport.height() >= \
             row.heightForWidth(win._transport.width())
         for b in win._transport.findChildren(QPushButton):
@@ -507,6 +607,23 @@ def test_transport_row_wraps_instead_of_cutting_its_buttons(app, tmp_path):
     # The row on one line no longer holds the window that wide (with the
     # app's theme the minimum went from 1533 px to 1121).
     assert least < one_line - 100
+    win.close()
+
+
+def test_the_3d_options_never_widen_the_window(app, tmp_path):
+    """The note on how to move about the 3D view wraps on a narrow window:
+    as one long line it held the whole window 600 px wider with VISTA 3D
+    on, the very squeeze that cut the transport buttons."""
+    from sogno_cane.io.archive import Archive
+    from sogno_cane.ui.main_window import MainWindow
+    win = MainWindow(archive=Archive(root=str(tmp_path / "rec")))
+    win.show()
+    win._view3d_btn.setChecked(False)
+    _pump(30)
+    off = win.minimumSizeHint().width()
+    win._view3d_btn.setChecked(True)
+    _pump(30)
+    assert win.minimumSizeHint().width() <= off + 2
     win.close()
 
 

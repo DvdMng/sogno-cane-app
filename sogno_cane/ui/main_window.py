@@ -34,6 +34,7 @@ from sogno_cane.settings import Settings
 from sogno_cane.ui.archive_panel import ArchivePanel
 from sogno_cane.ui.device_panel import DevicePanel
 from sogno_cane.ui.landscape_gl import make_landscape_view
+from sogno_cane.ui.landscape_view import NAVIGATION_HINT, Navigation
 from sogno_cane.ui.mapping_panel import MappingPanel
 from sogno_cane.ui.midi_monitor import MidiMonitor
 from sogno_cane.ui.projection import (
@@ -249,7 +250,16 @@ class MainWindow(QMainWindow):
             "destra. Intrecciati: un canale dell'uomo e uno del cane, a turno.",
             lambda key: self._set_landscape("order", key),
         )
-        opts.addStretch(1)
+        # The view is navigable with the mouse; say how, quietly, on the
+        # right. The note wraps on a narrow window instead of widening it
+        # (a long line held the whole window wider than the screen).
+        hint = QLabel(NAVIGATION_HINT)
+        hint.setWordWrap(True)
+        hint.setAlignment(Qt.AlignmentFlag.AlignRight
+                          | Qt.AlignmentFlag.AlignVCenter)
+        hint.setStyleSheet(f"color: {TEXT_DIM}; font-size: 8pt;")
+        opts.addSpacing(18)
+        opts.addWidget(hint, 1)
         box.addLayout(opts)
         box.addWidget(self._landscape, 1)
         self._landscape_box.hide()
@@ -574,7 +584,10 @@ class MainWindow(QMainWindow):
             "    passato che si allontana e svanisce. FORMA: LINEE, ogni\n"
             "    onda per sé, o MESH, le onde unite in un'unica superficie.\n"
             "    DISPOSIZIONE: affiancati (uomo a sinistra, cane a destra)\n"
-            "    o intrecciati.\n"
+            "    o intrecciati. Si naviga con il mouse: trascina per\n"
+            "    ruotare, tasto destro per spostare, rotella per avvicinare,\n"
+            "    doppio clic per l'inquadratura iniziale. La proiezione\n"
+            "    mostra lo stesso punto di vista.\n"
             "  • PROIEZIONE porta le onde sul proiettore collegato in\n"
             "    modalità Estendi (Windows: Win+P, Estendi) mentre l'app\n"
             "    resta qui. Dal suo pannello: schermo, tutto schermo,\n"
@@ -1003,6 +1016,8 @@ class MainWindow(QMainWindow):
             settings,
             {"human": self._human.visible_channels(),
              "dog": self._dog.visible_channels()},
+            # The projector shows the point of view set in STUDIO.
+            navigation=self._landscape.navigation,
         )
         win.closed.connect(self._on_projection_closed)
         self._projection = win
@@ -1104,6 +1119,8 @@ class MainWindow(QMainWindow):
         order = self._settings.get("display", "order_3d", default="grouped")
         if order in self._order_btns:
             self._set_landscape("order", order)
+        self._landscape.navigation = Navigation.from_dict(
+            self._settings.get("display", "camera_3d", default=None))
         if self._settings.get("display", "view_3d", default=False):
             self._set_view_3d(True)
 
@@ -1120,6 +1137,8 @@ class MainWindow(QMainWindow):
                            self._view3d_btn.isChecked())
         self._settings.set("display", "shape_3d", self._landscape.shape)
         self._settings.set("display", "order_3d", self._landscape.order)
+        self._settings.set("display", "camera_3d",
+                           self._landscape.navigation.to_dict())
         self._settings.set("projection", "settings",
                            self._projection_settings.to_dict())
         self._settings.save()

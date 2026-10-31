@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.9.10 — vista 3D navigabile, i momenti caotici restano
+
+- **Vista 3D navigabile con il mouse.** Si trascina per ruotare la scena,
+  con il tasto destro (o Maiusc) la si sposta nell'inquadratura, con la
+  rotella ci si avvicina fino a stare dentro le onde, e il doppio clic
+  torna all'inquadratura iniziale. A qualunque angolo la scena resta
+  centrata e riempie lo schermo. La proiezione mostra lo stesso punto di
+  vista impostato in STUDIO (sul proiettore il doppio clic continua a
+  chiuderla), e il punto di vista resta alla riapertura. Una nota accanto
+  a FORMA e DISPOSIZIONE ricorda i comandi.
+- **Più grande nello schermo.** L'inquadratura iniziale lascia meno
+  margine intorno alla scena.
+
+- **Momenti caotici e interferenze visibili anche nella mesh.** La vista 3D
+  era troppo «normalizzata»:
+  - la scala dell'ampiezza seguiva il 90° percentile degli ultimi secondi:
+    un momento caotico la alzava in pochi secondi e veniva ridimensionato,
+    e la calma che seguiva sembrava piatta. Ora segue la mediana
+    dell'attività, che una raffica quasi non sposta, in circa 20 s;
+  - il limite morbido tagliava i picchi a un'altezza fissa, con tetti
+    piatti. Ora è più alto e più graduale, e un artefatto resta grande;
+  - le onde erano ammorbidite di 6 ms e il tessuto di 10, e una raffica
+    muscolare o un'interferenza veloce sparivano. Ora 2 e 4 ms: si vedono
+    come grana fitta;
+  - nella mesh la camera è un po' più bassa, così le altezze si leggono
+    meglio, e c'è più spazio sopra e sotto per i picchi.
+
+  La fluidità non cambia: 60 fotogrammi al secondo, circa 1 ms di
+  processore per fotogramma.
+
+Test: +5, **322 totali**.
+
 ## 0.9.9 — vista 3D senza il blocco
 
 - **Niente più volume sotto la superficie.** La forma MESH torna come nella

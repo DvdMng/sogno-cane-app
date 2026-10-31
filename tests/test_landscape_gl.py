@@ -106,6 +106,66 @@ def test_the_dense_moments_of_an_eeg_come_through():
     assert at_20hz(thread) < at_20hz(strand)
 
 
+def test_a_chaotic_moment_stays_large_against_the_calm():
+    """Field request: the 3D view was "too normalized", chaotic moments and
+    interference did not show. A two-second artefact at eight times the
+    usual size now stands well above the calm without flat tops (the old
+    soft limit capped everything at 1), and the calm after it keeps its
+    size: the scale follows the median of the activity, slowly, so the
+    artefact barely moves it."""
+    rng = np.random.default_rng(3)
+    t = np.arange(14 * FS) / FS
+    x = rng.normal(0.0, 10.0, (t.size, 8)) + 40000.0
+    burst = (t >= 10.0) & (t < 12.0)
+    x[burst] += rng.normal(0.0, 80.0, (int(burst.sum()), 8))
+    scene = _scene()
+    _run(scene, x, seconds=13.5)
+    cols = np.arange(scene.count - scene.n, scene.count)
+    size = np.abs(scene.values["human"][cols % scene.n]).mean(axis=1)
+    sec = cols / FS                      # one column per sample here
+    calm_before = np.median(size[(sec > 7.5) & (sec < 9.8)])
+    loud = np.percentile(size[(sec > 10.2) & (sec < 11.8)], 95)
+    calm_after = np.median(size[sec > 12.3])
+    assert loud > 1.1                    # above the old ceiling of 1
+    assert loud > 4.0 * calm_before
+    assert calm_after > 0.8 * calm_before
+
+
+def test_navigation_starts_from_the_framed_view_and_stays_above():
+    """Field request: "rendi navigabile il 3d". Untouched, the point of
+    view is the framed one; turned, it stays 4 to 85 degrees above the
+    surface, and dragging back answers at once (no dead zone)."""
+    import math
+    from sogno_cane.ui.landscape_view import Navigation
+    scene = _scene()
+    scene.shape = "mesh"
+    base = scene._camera(6.0, 0.3, navigated=False)
+    same = scene._camera(6.0, 0.3)
+    assert np.allclose(base[0], same[0])
+    target = np.array([0.35 * 6.0, 0.0, 0.42 * 26.0])
+    nav = Navigation()
+    nav.turn(400.0, 0.0)                         # a turn: same distance
+    turned = nav.orbit(base[0], target)
+    assert math.isclose(np.linalg.norm(turned - target),
+                        np.linalg.norm(base[0] - target))
+    assert not np.allclose(turned, base[0])
+    nav.turn(0.0, 5000.0)                        # far past the top
+    top = nav.orbit(base[0], target)
+    assert math.degrees(math.asin((top - target)[1] / np.linalg.norm(
+        top - target))) <= 85.0 + 1e-6
+    nav.turn(0.0, -20.0)                         # back: moves at once
+    assert not np.allclose(nav.orbit(base[0], target), top)
+    nav.scale(30)
+    assert nav.zoom == 4.0
+    nav.move(5.0, -5.0)
+    assert (nav.pan_x, nav.pan_y) == (1.0, -1.0)
+    again = Navigation.from_dict(nav.to_dict())
+    assert again.to_dict() == nav.to_dict()
+    odd = Navigation.from_dict({"zoom": "x", "yaw": float("nan"),
+                                "pan_x": 9})
+    assert (odd.zoom, odd.yaw, odd.pan_x) == (1.0, 0.0, 1.0)
+
+
 def test_rows_are_the_strands_and_the_threads_between_them():
     """One surface, nothing under it: no walls, no base (the block of 0.9.8
     was not wanted)."""

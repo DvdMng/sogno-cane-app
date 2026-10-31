@@ -80,6 +80,138 @@ _MESH_LINES = 560            # the surface is soft anyway, and costs more
 # drawn is time taken from the MIDI engine (same interpreter).
 FRAME_MS = 33
 _DRIFT_PERIOD_S = 70.0       # slow drift of the point of view
+# The point of view, moved with the mouse: drag to turn the scene, right
+# button (or Shift) to move it in the frame, wheel to come closer,
+# double-click for the framed view again.
+NAVIGATION_HINT = ("trascina: ruota  ·  tasto destro: sposta  ·  "
+                   "rotella: avvicina  ·  doppio clic: inquadratura iniziale")
+_TURN = 0.006                # radians per pixel dragged
+_ZOOM_RANGE = (0.5, 4.0)
+_PITCH_RANGE = (math.radians(4.0), math.radians(85.0))
+
+
+class Navigation:
+    """Where the user has moved the point of view: turned about the middle
+    of the scene (yaw, pitch, radians), the lens (zoom), the scene moved in
+    its frame (pan, shares of the frame). The defaults give the framed
+    view; STUDIO and the projection share one, so the projector shows what
+    is set on the PC."""
+
+    _FIELDS = ("yaw", "pitch", "zoom", "pan_x", "pan_y")
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self.yaw = 0.0
+        self.pitch = 0.0
+        self.zoom = 1.0
+        self.pan_x = 0.0
+        self.pan_y = 0.0
+
+    def to_dict(self) -> dict:
+        return {name: float(getattr(self, name)) for name in self._FIELDS}
+
+    @classmethod
+    def from_dict(cls, data) -> "Navigation":
+        nav = cls()
+        if isinstance(data, dict):
+            for name in cls._FIELDS:
+                try:
+                    value = float(data.get(name, getattr(nav, name)))
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(value):
+                    setattr(nav, name, value)
+        nav.yaw = math.remainder(nav.yaw, 2.0 * math.pi)
+        nav.pitch = min(math.pi / 2, max(-math.pi / 2, nav.pitch))
+        nav.zoom = min(_ZOOM_RANGE[1], max(_ZOOM_RANGE[0], nav.zoom))
+        nav.pan_x = min(1.0, max(-1.0, nav.pan_x))
+        nav.pan_y = min(1.0, max(-1.0, nav.pan_y))
+        return nav
+
+    def turn(self, dx: float, dy: float) -> None:
+        """As if the scene were grabbed: right turns it right, down tips
+        its far side toward the viewer."""
+        self.yaw = math.remainder(self.yaw - dx * _TURN, 2.0 * math.pi)
+        self.pitch += dy * _TURN
+
+    def move(self, fx: float, fy: float) -> None:
+        self.pan_x = min(1.0, max(-1.0, self.pan_x + fx))
+        self.pan_y = min(1.0, max(-1.0, self.pan_y + fy))
+
+    def scale(self, notches: float) -> None:
+        self.zoom = min(_ZOOM_RANGE[1],
+                        max(_ZOOM_RANGE[0], self.zoom * 1.1 ** notches))
+
+    def orbit(self, pos: np.ndarray, target: np.ndarray) -> np.ndarray:
+        """The eye at ``pos`` turned about ``target``: about the vertical,
+        then up or down, kept 4 to 85 degrees above the surface (the pitch
+        is held there too, so dragging back answers at once)."""
+        off = pos - target
+        dist = float(np.linalg.norm(off))
+        az = math.atan2(off[0], -off[2]) + self.yaw
+        el0 = math.asin(max(-1.0, min(1.0, off[1] / dist)))
+        el = min(_PITCH_RANGE[1], max(_PITCH_RANGE[0], el0 + self.pitch))
+        self.pitch = el - el0
+        return target + dist * np.array([
+            math.cos(el) * math.sin(az),
+            math.sin(el),
+            -math.cos(el) * math.cos(az),
+        ])
+
+    def frame(self, fit: tuple, w: int, h: int) -> tuple:
+        """The fit (scale, off_x, off_y) with the lens and the move: the
+        middle of the scene stays put as the lens changes."""
+        scale, off_x, off_y = fit
+        return scale * self.zoom, off_x + self.pan_x * w, \
+            off_y + self.pan_y * h
+
+
+def nav_press(view, event) -> None:
+    view._drag = (event.button(), event.modifiers(), event.position())
+    view.setCursor(Qt.CursorShape.ClosedHandCursor)
+    event.accept()
+
+
+def nav_move(view, event) -> None:
+    if view._drag is None:
+        return
+    button, mods, last = view._drag
+    pos = event.position()
+    dx, dy = pos.x() - last.x(), pos.y() - last.y()
+    view._drag = (button, mods, pos)
+    if button == Qt.MouseButton.LeftButton \
+            and not mods & Qt.KeyboardModifier.ShiftModifier:
+        view.navigation.turn(dx, dy)
+    else:
+        view.navigation.move(dx / max(1, view.width()),
+                             dy / max(1, view.height()))
+    view.update()
+    event.accept()
+
+
+def nav_release(view, event) -> None:
+    view._drag = None
+    view.unsetCursor()
+    event.accept()
+
+
+def nav_wheel(view, event) -> None:
+    view.navigation.scale(event.angleDelta().y() / 120.0)
+    view.update()
+    event.accept()
+
+
+def nav_double_click(view, event) -> None:
+    """The framed view again; where double-click means something else (it
+    closes the projection), the click goes on to the window."""
+    if not view.reset_on_double_click:
+        event.ignore()
+        return
+    view.navigation.reset()
+    view.update()
+    event.accept()
 
 
 class _Stream:
@@ -157,6 +289,9 @@ class LandscapeView(QWidget):
         self.show_labels = True
         self.gain = 1.0
         self.drift = True
+        self.navigation = Navigation()
+        self.reset_on_double_click = True
+        self._drag = None
         self._bg = QColor(background)
         self._accum: QImage | None = None
         self._t0 = time.perf_counter()
@@ -174,6 +309,21 @@ class LandscapeView(QWidget):
         stream = self._streams.get(kind)
         if stream is not None:
             stream.push(packet, time.perf_counter())
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt name
+        nav_press(self, event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802 - Qt name
+        nav_move(self, event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt name
+        nav_release(self, event)
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
+        nav_double_click(self, event)
+
+    def wheelEvent(self, event) -> None:  # noqa: N802 - Qt name
+        nav_wheel(self, event)
 
     def set_profile(self, kind: str, profile: DeviceProfile) -> None:
         """Another headset on that side: start its strands afresh."""
@@ -232,10 +382,12 @@ class LandscapeView(QWidget):
         mid = (xs[0] + xs[-1]) / 2.0
         return [r + (x - mid,) for r, x in zip(ordered, xs)]
 
-    def _camera(self, half_width: float, phase: float):
+    def _camera(self, half_width: float, phase: float,
+                navigated: bool = True):
         """Low and to one side, looking along the strands into the past;
         higher for the surface (a three-quarter view from above), where a
-        low eye made the peaks overlap and the grid unreadable."""
+        low eye made the peaks overlap and the grid unreadable. Then turned
+        as the user has turned it."""
         sway = math.sin(phase)
         target = np.array([0.35 * half_width, 0.0, 0.42 * _DEPTH])
         mesh = self.shape == "mesh"
@@ -244,6 +396,8 @@ class LandscapeView(QWidget):
             (5.2 if mesh else 2.3) + 0.35 * math.sin(phase * 0.7 + 1.0),
             -6.0 if mesh else -4.6,
         ])
+        if navigated:
+            pos = self.navigation.orbit(pos, target)
         f = target - pos
         f /= np.linalg.norm(f)
         r = np.cross([0.0, 1.0, 0.0], f)
@@ -260,9 +414,12 @@ class LandscapeView(QWidget):
 
     def _fit_to(self, half_width: float, w: int, h: int):
         """Pixels per unit and offsets so the scene fills the frame."""
-        key = (w, h, round(half_width, 3), self.shape)
+        nav = self.navigation
+        key = (w, h, round(half_width, 3), self.shape,
+               round(nav.yaw, 3), round(nav.pitch, 3))
         if key == self._fit_key:
             return self._fit
+        # Framed as turned: the scene fills the frame at any angle.
         cam = self._camera(half_width, 0.0)
         mesh = self.shape == "mesh"
         tall = _HEIGHT * (_MESH_RELIEF if mesh else 1.0)
@@ -327,7 +484,8 @@ class LandscapeView(QWidget):
             if self.drift else 0.0
         cam = self._camera(half, phase)
         w, h = img.width(), img.height()
-        scale, off_x, off_y = self._fit_to(half, w, h)
+        scale, off_x, off_y = self.navigation.frame(
+            self._fit_to(half, w, h), w, h)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         fronts: dict[str, list[tuple[float, float]]] = {}
         drawn, world = [], []

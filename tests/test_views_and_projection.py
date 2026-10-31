@@ -417,15 +417,61 @@ def test_projection_controls_apply_every_change_at_once(app):
     ctl._content_cb.setCurrentIndex(1)              # Tracce
     assert seen[-1].content == "traces"
     assert seen[-1].layout == "stacked"
-    ctl._gain_sb.setValue(2.0)
+    ctl._gain_row.slider.setValue(200)
     assert seen[-1].gain == 2.0
+    assert ctl._gain_row.label.text() == "2,00 ×"
+    ctl._seconds_row.slider.setValue(12)
+    assert seen[-1].seconds == 12.0
     ctl._full_cb.setChecked(False)
     assert seen[-1].fullscreen is False
-    assert not ctl._drift_cb.isEnabled()            # 3D only
-    assert not ctl._shape_cb.isEnabled()
+    assert not ctl._drift_cb.isVisibleTo(ctl)       # 3D only: not shown
+    assert not ctl._shape_cb.isVisibleTo(ctl)
     ctl._content_cb.setCurrentIndex(0)              # back to 3D
     ctl._shape_cb.setCurrentIndex(1)
-    assert seen[-1].shape == "mesh" and ctl._shape_cb.isEnabled()
+    assert seen[-1].shape == "mesh" and ctl._shape_cb.isVisibleTo(ctl)
+
+
+def test_the_projection_panel_shows_only_what_can_be_set(app):
+    """Field report on 0.9.11: with the 3D view «secondi» and «ampiezza»
+    were shown switched off («non sono configurabili»), and spin boxes are
+    a poor way to adjust a look. Now every row shown can be set, as a
+    slider where it is a quantity: for the 3D view STUDIO's REGOLAZIONI
+    (the fabric only with MESH), for the traces their field and height."""
+    from PySide6.QtWidgets import (
+        QAbstractButton,
+        QAbstractSpinBox,
+        QComboBox,
+        QSlider,
+    )
+    from sogno_cane.ui.landscape_view import ViewStyle
+    from sogno_cane.ui.projection import ProjectionControls, \
+        ProjectionSettings
+    style = ViewStyle()
+    ctl = ProjectionControls(ProjectionSettings(), style)
+    assert not ctl.findChildren(QAbstractSpinBox)
+
+    def shown():
+        return [w for kind in (QAbstractButton, QComboBox, QSlider)
+                for w in ctl.findChildren(kind) if w.isVisibleTo(ctl)]
+
+    rows = ctl._style_rows.rows
+    for content, shape in ((0, 0), (0, 1), (1, 0), (1, 1)):
+        ctl._content_cb.setCurrentIndex(content)
+        ctl._shape_cb.setCurrentIndex(shape)
+        assert all(w.isEnabled() for w in shown()), (content, shape)
+        is_3d, mesh = content == 0, shape == 1
+        for name, row in rows.items():
+            assert row.slider.isVisibleTo(ctl) == (
+                is_3d and (name != "fabric" or mesh)), (name, content, shape)
+        assert ctl._seconds_row.slider.isVisibleTo(ctl) is not is_3d
+        assert ctl._gain_row.slider.isVisibleTo(ctl) is not is_3d
+    # The 3D rows move the style they were given (STUDIO's), at once.
+    ctl._content_cb.setCurrentIndex(0)
+    seen = []
+    ctl.style_changed.connect(lambda: seen.append(True))
+    rows["contrast"].slider.setValue(170)
+    assert style.contrast == pytest.approx(1.7) and seen == [True]
+    assert rows["contrast"].label.text() == "170 %"
 
 
 def test_projection_window_is_fed_and_reconfigured_live(app):
@@ -449,6 +495,10 @@ def test_projection_window_is_fed_and_reconfigured_live(app):
     win.apply(ProjectionSettings(content="traces", layout="dog"))
     assert win._view is None and list(win._traces) == ["dog"]
     assert win._traces["dog"].visible_channels() == [0, 1, 2, 3]
+    wave = win._traces["dog"]                       # another field: kept
+    win.apply(ProjectionSettings(content="traces", layout="dog",
+                                 seconds=12.0))
+    assert win._traces["dog"] is wave and wave._n_visible == 12 * FS
     closed = []
     win.closed.connect(lambda: closed.append(True))
     win.close()
@@ -706,11 +756,53 @@ def _brightness(image):
                for y in range(0, image.height(), 3))
 
 
+def test_another_field_in_view_keeps_what_was_there(app):
+    """The field in view is a slider, dragged even while projecting: it
+    must not empty the view. The newest samples stay, in the 3D view and in
+    the projection's traces, the field growing into the past or losing
+    its oldest part."""
+    from sogno_cane.ui.landscape_view import LandscapeView
+    from sogno_cane.ui.waveform_widget import WaveformWidget
+    view = LandscapeView({"human": HUMAN_PROFILE, "dog": DOG_PROFILE},
+                         background="#000000")
+    view.resize(800, 450)
+    view.drift = False
+    view.set_visible_channels("dog", [0, 1])
+    _feed(view, 4.0)
+
+    def newest(s, k):
+        return s._ring[s._head + s.n - k:s._head + s.n].copy()
+
+    before = newest(view._streams["human"], 500)
+    assert np.abs(before).sum() > 0
+    for seconds in (12.0, 3.0):
+        view.style.seconds = seconds
+        view._follow_style()
+        s = view._streams["human"]
+        assert s.n >= seconds * FS - s.step
+        assert np.array_equal(newest(s, 500), before), seconds
+    assert view.visible_channels("dog") == [0, 1]
+    assert _lit(view.grab().toImage()) > 200
+
+    wave = WaveformWidget(HUMAN_PROFILE, seconds_visible=4.0)
+    rows = np.random.default_rng(3).normal(0, 20, (4 * FS, 8))
+    wave._append(rows.astype(np.float32))
+
+    def window(w):
+        return w._ring[w._head:w._head + w._n_visible]
+
+    for seconds in (12.0, 2.0):
+        wave.set_seconds_visible(seconds)
+        assert wave._n_visible == seconds * FS
+        k = int(min(4.0, seconds) * FS)
+        assert np.allclose(window(wave)[-k:], rows[-k:]), seconds
+
+
 def test_the_regolazioni_change_the_3d_picture(app):
     """Contrast brightens the lines, thickness widens them, the fabric goes
     from nothing (only the waves) to twice as present; another field in
-    view starts the strands again at that length, keeping the waves
-    chosen. The height of the waves is the same setting as the view's."""
+    view goes on at that length, keeping the waves chosen. The height of
+    the waves is the same setting as the view's."""
     from sogno_cane.ui.landscape_view import LandscapeView
     view = LandscapeView({"human": HUMAN_PROFILE, "dog": DOG_PROFILE},
                          background="#000000")
@@ -758,19 +850,25 @@ def test_the_regolazioni_panel_moves_the_style_and_resets_it(app):
             ("seconds", 12, 12.0, "12 s"),
             ("gain", 150, 1.5, "1,50 ×"),
             ("fabric", 0, 0.0, "solo le onde")):
-        slider, label = ctl._rows[name][:2]
-        slider.setValue(pos)
+        row = ctl.rows[name]
+        row.slider.setValue(pos)
         assert getattr(style, name) == pytest.approx(value), name
-        assert label.text() == text
+        assert row.label.text() == text
     assert len(seen) == 5                       # every change at once
     ctl.reset()
     assert style.to_dict() == ViewStyle.DEFAULTS
-    assert ctl._rows["contrast"][0].value() == 100
-    assert ctl._rows["fabric"][1].text() == "100 %"
+    assert ctl.rows["contrast"].slider.value() == 100
+    assert ctl.rows["fabric"].label.text() == "100 %"
     other = ViewStyle.from_dict({"thickness": 2.0})
     ctl.set_style(other)
-    assert ctl._rows["thickness"][0].value() == 20
+    assert ctl.rows["thickness"].slider.value() == 20
     assert len(seen) == 6                       # loading is not a change
+    # The fabric acts only on the MESH shape: only there is it shown.
+    ctl.set_shape("lines")
+    assert not ctl.rows["fabric"].slider.isVisibleTo(ctl)
+    assert ctl.rows["contrast"].slider.isVisibleTo(ctl)
+    ctl.set_shape("mesh")
+    assert ctl.rows["fabric"].slider.isVisibleTo(ctl)
 
 
 def test_the_regolazioni_are_kept_and_the_projector_shares_them(app,
@@ -786,25 +884,28 @@ def test_the_regolazioni_are_kept_and_the_projector_shares_them(app,
     button[0].click()
     ctl = win._style_controls
     assert ctl is not None and ctl.isVisible()
-    ctl._rows["contrast"][0].setValue(180)
+    ctl.rows["contrast"].slider.setValue(180)
     assert win._landscape.style.contrast == pytest.approx(1.8)
+    assert not ctl.rows["fabric"].slider.isVisibleTo(ctl)   # STUDIO: LINEE
+    win._shape_btns["mesh"].click()
+    assert ctl.rows["fabric"].slider.isVisibleTo(ctl)
+    # The projection's panel has the same REGOLAZIONI, on the same style:
+    # moved there, STUDIO's panel shows it, and the other way round.
     win._show_projection_controls()
     pc = win._projection_controls
-    assert pc._style_btn.isEnabled()            # 3D: REGOLAZIONI decide
-    assert not pc._seconds_sb.isEnabled() and not pc._gain_sb.isEnabled()
-    ctl.hide()
-    pc._style_btn.click()
-    assert ctl.isVisible()                      # the same panel
+    rows = pc._style_rows.rows
+    assert rows["contrast"].slider.value() == 180
+    rows["thickness"].slider.setValue(20)
+    assert win._landscape.style.thickness == pytest.approx(2.0)
+    assert ctl.rows["thickness"].slider.value() == 20
+    ctl.rows["gain"].slider.setValue(140)
+    assert rows["gain"].slider.value() == 140
+    ctl.rows["gain"].slider.setValue(100)
     win._toggle_projection()
     proj = win._projection
     assert proj._view.style is win._landscape.style
-    ctl._rows["thickness"][0].setValue(20)
-    assert proj._view.style.thickness == pytest.approx(2.0)
-    proj.apply(ProjectionSettings(gain=2.5))    # the panel's height stays
+    proj.apply(ProjectionSettings(gain=2.5))    # the traces' height only
     assert win._landscape.style.gain == 1.0
-    pc._content_cb.setCurrentIndex(1)           # Tracce: their own fields
-    assert pc._seconds_sb.isEnabled() and pc._gain_sb.isEnabled()
-    assert not pc._style_btn.isEnabled()
     win._toggle_projection()
     _pump(30)
     kept = win._landscape.style.to_dict()

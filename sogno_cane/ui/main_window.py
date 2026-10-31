@@ -605,16 +605,17 @@ class MainWindow(QMainWindow):
             "    o intrecciati. Si naviga con il mouse: trascina per\n"
             "    ruotare, tasto destro per spostare, rotella per avvicinare,\n"
             "    doppio clic per l'inquadratura iniziale. REGOLAZIONI:\n"
-            "    contrasto, spessore delle linee, campo visibile, ampiezza,\n"
-            "    tessuto. La proiezione mostra lo stesso punto di vista e le\n"
-            "    stesse regolazioni.\n"
+            "    contrasto, spessore delle linee, campo visibile, ampiezza e,\n"
+            "    con MESH, tessuto. La proiezione mostra lo stesso punto di\n"
+            "    vista e le stesse regolazioni.\n"
             "  • PROIEZIONE porta le onde sul proiettore collegato in\n"
             "    modalità Estendi (Windows: Win+P, Estendi) mentre l'app\n"
             "    resta qui. Dal suo pannello: schermo, tutto schermo,\n"
-            "    vista 3D o tracce, forma, disposizione; secondi e ampiezza\n"
-            "    per le tracce. A tutto schermo non c'è la barra del titolo:\n"
-            "    Esc riporta la finestra, un secondo Esc la chiude, F11 torna\n"
-            "    a tutto schermo.\n\n"
+            "    vista 3D o tracce, disposizione; per la vista 3D forma e\n"
+            "    regolazioni (le stesse di STUDIO), per le tracce campo\n"
+            "    visibile e ampiezza. A tutto schermo non c'è la barra del\n"
+            "    titolo: Esc riporta la finestra, un secondo Esc la chiude,\n"
+            "    F11 torna a tutto schermo.\n\n"
             "NOTE CHE RESTANO ACCESE\n"
             "  PANIC manda un note-off per ogni nota di ogni canale: spegne\n"
             "  anche le note rimaste appese in Ableton da una sessione\n"
@@ -979,6 +980,8 @@ class MainWindow(QMainWindow):
         buttons = self._shape_btns if attr == "shape" else self._order_btns
         if value in buttons and not buttons[value].isChecked():
             buttons[value].setChecked(True)
+        if attr == "shape" and self._style_controls is not None:
+            self._style_controls.set_shape(value)     # the fabric: MESH only
         self._landscape.update()
 
     def _set_view_3d(self, on: bool) -> None:
@@ -1020,16 +1023,22 @@ class MainWindow(QMainWindow):
         """REGOLAZIONI of the 3D view, for STUDIO and the projection."""
         if self._style_controls is None:
             ctl = ViewStyleControls(self._landscape.style, self)
-            ctl.changed.connect(self._on_style_changed)
+            ctl.changed.connect(lambda: self._on_style_changed(ctl))
+            ctl.set_shape(self._landscape.shape)
             self._style_controls = ctl
         self._style_controls.show()
         self._style_controls.raise_()
         self._style_controls.activateWindow()
 
-    def _on_style_changed(self) -> None:
+    def _on_style_changed(self, source=None) -> None:
+        """The REGOLAZIONI moved, here or in the projection's panel: both
+        views at once, and the other panel shows the same values."""
         self._landscape.update()
         if self._projection is not None:
             self._projection.update()
+        for panel in (self._style_controls, self._projection_controls):
+            if panel is not None and panel is not source:
+                panel.load_style()
 
     def _on_escape(self) -> None:
         if self._projection is not None and self._projection.isFullScreen():
@@ -1037,10 +1046,11 @@ class MainWindow(QMainWindow):
 
     def _show_projection_controls(self) -> None:
         if self._projection_controls is None:
-            ctl = ProjectionControls(self._projection_settings, self)
+            ctl = ProjectionControls(self._projection_settings,
+                                     self._landscape.style, self)
             ctl.settings_changed.connect(self._on_projection_settings)
             ctl.toggle_requested.connect(self._toggle_projection)
-            ctl.style_requested.connect(self._show_style_controls)
+            ctl.style_changed.connect(lambda: self._on_style_changed(ctl))
             self._projection_controls = ctl
         self._projection_controls.set_projecting(self._projection is not None)
         self._projection_controls.show()

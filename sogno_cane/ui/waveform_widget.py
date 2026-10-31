@@ -291,6 +291,23 @@ class WaveformWidget(QWidget):
         )
         self._draw()
 
+    def set_seconds_visible(self, seconds: float) -> None:
+        """Another length in view, keeping what is drawn: the newest
+        samples stay at the right, the past grows or loses its oldest."""
+        n_old, n = self._n_visible, int(seconds * self._fs)
+        if n == n_old or n < 2:
+            return
+        newest = self._ring[self._head:self._head + n_old][-n:]
+        k = newest.shape[0]
+        self._ring = np.zeros((2 * n, self._ring.shape[1]), dtype=np.float32)
+        for base in (0, n):                      # both copies
+            self._ring[base + n - k:base + n] = newest
+        self._head = 0
+        self._n_visible = n
+        self._x_axis = np.arange(n)
+        self._plot.setXRange(0, n)
+        self._draw()
+
     def set_axes_visible(self, on: bool) -> None:
         """The thin axis lines (off for projection)."""
         for side in ("left", "bottom"):

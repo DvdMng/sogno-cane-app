@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.9.12 — pannello della proiezione: solo ciò che si regola
+
+- **Pannello PROIEZIONE senza campi spenti.** Con la vista 3D «secondi» e
+  «ampiezza» comparivano disattivati. Ora il pannello mostra solo ciò che
+  agisce sul contenuto scelto:
+  - per la vista 3D ci sono direttamente le REGOLAZIONI a cursore
+    (contrasto, spessore linee, campo visibile, ampiezza e, con la forma
+    MESH, tessuto), le stesse di STUDIO: spostate qui si vedono anche nel
+    pannello di STUDIO, e viceversa;
+  - per le tracce, campo visibile e ampiezza, anch'essi a cursore al posto
+    dei campi numerici;
+  - forma e movimento lento del punto di vista compaiono solo con la vista
+    3D.
+- **Campo visibile senza ripartire da capo.** Cambiandolo, la vista 3D e le
+  tracce tengono ciò che è già arrivato: il presente resta, il passato si
+  allunga o perde la parte più vecchia. Il cursore si può trascinare anche
+  durante la proiezione.
+- **Tessuto solo con MESH** anche nelle REGOLAZIONI di STUDIO: con LINEE
+  non avrebbe effetto.
+
+Test: +3, **331 totali**.
+
 ## 0.9.11 — regolazioni della vista 3D, proiezione senza barra del titolo
 
 - **Proiezione a tutto schermo senza barra del titolo, anche con un solo

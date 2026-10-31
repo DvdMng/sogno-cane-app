@@ -280,6 +280,20 @@ class _Stream:
     def push(self, packet: UnicornPacket, now: float) -> None:
         self._playout.push(self._cleaner.process(packet.eeg), now)
 
+    def resized(self, seconds: float) -> "_Stream":
+        """The same stream with another length in view: cleaning, pacing
+        and scale go on, the newest samples stay."""
+        fresh = _Stream(self.profile, seconds)
+        fresh.visible = self.visible
+        fresh._cleaner, fresh._playout = self._cleaner, self._playout
+        fresh.scale, fresh.received = self.scale, self.received
+        k = min(self.n, fresh.n, self.received)
+        if k:
+            newest = self._ring[self._head + self.n - k:self._head + self.n]
+            for base in (0, fresh.n):           # the window ends with them
+                fresh._ring[base + fresh.n - k:base + fresh.n] = newest
+        return fresh
+
     def advance(self, now: float) -> bool:
         rows = self._playout.take(now)
         if rows is None:
@@ -402,14 +416,13 @@ class LandscapeView(QWidget):
         return list(self._streams[kind].visible)
 
     def _follow_style(self) -> None:
-        """Another field in view: the strands start again at that length."""
+        """Another field in view: the strands go on at that length with
+        what they hold."""
         if abs(self.style.seconds - self._seconds) < 1e-6:
             return
         self._seconds = float(self.style.seconds)
         for kind, old in list(self._streams.items()):
-            fresh = _Stream(old.profile, self._seconds)
-            fresh.visible = old.visible
-            self._streams[kind] = fresh
+            self._streams[kind] = old.resized(self._seconds)
         self._fit_key = None
 
     def advance(self) -> None:

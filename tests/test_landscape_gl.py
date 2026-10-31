@@ -50,8 +50,8 @@ def _scene():
                   QColor("#000000"))
 
 
-def _run(scene, human, dog=None, seconds=10.0, dog_rate=FS):
-    clock, fh, fd = 1000.0, 0, 0
+def _run(scene, human, dog=None, seconds=10.0, dog_rate=FS, clock=1000.0):
+    fh, fd = 0, 0
     for k in range(int(seconds * 60)):
         clock += 1.0 / 60.0
         while fh < (k / 60.0) * FS + 25 and fh + 25 <= human.shape[0]:
@@ -185,6 +185,33 @@ def test_rows_are_the_strands_and_the_threads_between_them():
     assert np.allclose(mix[threads].sum(axis=1), 1.0)
 
 
+def test_another_field_in_view_keeps_the_columns():
+    """Changing the field in view (a slider, dragged even while projecting)
+    respaces the columns already made instead of starting empty: shorter,
+    the newest ones as they were; longer, each new column the mean of the
+    old ones it spans. The feeds go on (same cleaning, pacing, scale)."""
+    scene = _scene()
+    clock = _run(scene, _eeg(12, 1), _eeg(12, 2), seconds=8.0)
+    assert scene.count > scene.n                      # the field is full
+    feeds = scene.feeds
+    order = np.arange(scene.count - scene.n, scene.count) % scene.n
+    old = {k: v[order] for k, v in scene.values.items()}
+    short = scene.resized(3.0)
+    assert short.feeds is feeds and short.n == 750 and short.count == 750
+    for kind, cols in old.items():
+        assert np.allclose(short.values[kind][:750], cols[-750:])
+    long = scene.resized(12.0)
+    assert long.step == 2 and long.count == scene.n // 2
+    for kind, cols in old.items():
+        pairs = cols.reshape(-1, 2, cols.shape[1]).mean(axis=1)
+        assert np.allclose(long.values[kind][:long.count], pairs,
+                           atol=1e-5)
+    assert all(f._recent.shape[0] == long.total for f in feeds.values())
+    # And it goes on from there.
+    _run(long, _eeg(4, 3), _eeg(4, 4), seconds=2.0, clock=clock)
+    assert long.count > scene.n // 2 + 150
+
+
 def test_without_opengl_the_app_keeps_the_qpainter_view():
     from PySide6.QtWidgets import QApplication
     from sogno_cane.ui.landscape_gl import gl_available, make_landscape_view
@@ -306,18 +333,29 @@ _CHILD = textwrap.dedent(r'''
     frame(scene, clock)
     scene.shape = "lines"
     frame(scene, clock)
-    # Another field in view: a new scene of that length, on the same
-    # context, keeping the rest (as the widget does before a frame).
+    # Another field in view, as the widget does before a frame: the scene
+    # goes on at that length with what it holds, its GL objects moved
+    # along, and the very next frame shows the past (nothing new fed).
     import types
     holder = types.SimpleNamespace(_scene=scene, _ready=True)
+    scene.shape = "mesh"
+    held = lit(frame(scene, clock))
     style.seconds = 12.0
     lg.LandscapeGLView._follow_style(holder)
     fresh = holder._scene
-    assert fresh is not scene and holder._ready and fresh.seconds == 12.0
+    assert fresh is not scene and fresh.seconds == 12.0
+    assert fresh._gl is not None and scene._gl is None
     assert fresh.style is style and fresh.navigation is scene.navigation
     assert fresh.feeds["dog"].visible == [0, 1, 2, 3]
-    assert (fresh.order, fresh.shape) == ("interleaved", "lines")
-    fresh.shape = "mesh"
+    assert (fresh.order, fresh.shape) == ("interleaved", "mesh")
+    assert fresh.count == scene.n // 2
+    assert lit(frame(fresh, clock)) > 0.4 * held, (held,)
+    style.seconds = 3.0                       # and shorter
+    lg.LandscapeGLView._follow_style(holder)
+    assert lit(frame(holder._scene, clock)) > 0.4 * held
+    style.seconds = 12.0
+    lg.LandscapeGLView._follow_style(holder)
+    fresh = holder._scene
     for k in range(60):
         clock += 1.0 / 60.0
         while fed + 25 <= human.shape[0] and \

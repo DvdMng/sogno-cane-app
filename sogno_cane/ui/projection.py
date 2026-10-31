@@ -6,9 +6,12 @@ the PC's screen: it opens without taking the focus. Everything about it is
 set from a control panel that stays open in the app and applies each
 change at once, also while projecting: screen, full screen or window,
 content (the combined perspective view, as lines or as one surface, or
-the trace views), layout, seconds shown, amplitude, labels and the drift of
-the point of view.
-With a single screen it opens as an ordinary window.
+the trace views), layout, labels; for the 3D view the drift of the point of
+view and the REGOLAZIONI, the same as STUDIO's; for the traces how much
+past they show and how high. The panel shows only what acts on the content
+chosen.
+At full screen there is no title bar, also on the PC's only screen: Esc
+brings the window back, a second Esc closes it, F11 toggles.
 """
 from __future__ import annotations
 
@@ -22,12 +25,10 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
-    QDoubleSpinBox,
     QFormLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -35,6 +36,8 @@ from PySide6.QtWidgets import (
 from sogno_cane.eeg.profiles import DeviceProfile
 from sogno_cane.eeg.unicorn_packet import UnicornPacket
 from sogno_cane.ui.landscape_gl import make_landscape_view
+from sogno_cane.ui.landscape_view import ViewStyle
+from sogno_cane.ui.style_controls import SliderRow, StyleRows, number
 from sogno_cane.ui.theme import PANEL_FILL, TEXT, TEXT_DIM
 from sogno_cane.ui.waveform_widget import WaveformWidget
 
@@ -116,13 +119,15 @@ def find_screen(name: str) -> QScreen | None:
 
 
 class ProjectionControls(QDialog):
-    """The projection's settings; every change applies at once."""
+    """The projection's settings; every change applies at once, and only
+    what acts on the content chosen is shown."""
 
     settings_changed = Signal(object)     # ProjectionSettings
     toggle_requested = Signal()           # open / close the projection
-    style_requested = Signal()            # the REGOLAZIONI of the 3D view
+    style_changed = Signal()              # the REGOLAZIONI, moved here
 
     def __init__(self, settings: ProjectionSettings,
+                 style: ViewStyle | None = None,
                  parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Proiezione")
@@ -135,6 +140,7 @@ class ProjectionControls(QDialog):
         self._loading = True
         v = QVBoxLayout(self)
         form = QFormLayout()
+        self._form = form
 
         screen_row = QHBoxLayout()
         self._screen_cb = QComboBox()
@@ -168,43 +174,44 @@ class ProjectionControls(QDialog):
         self._shape_cb.setToolTip(
             "Linee: ogni onda per sé. Mesh: le onde unite in un'unica\n"
             "superficie a trama fine; le onde restano le linee più\n"
-            "luminose. Solo per la vista 3D."
+            "luminose."
         )
         form.addRow("forma", self._shape_cb)
 
-        self._seconds_sb = QDoubleSpinBox()
-        self._seconds_sb.setRange(2.0, 20.0)
-        self._seconds_sb.setSingleStep(1.0)
-        self._seconds_sb.setDecimals(0)
-        self._seconds_sb.setSuffix(" s")
-        self._seconds_sb.setToolTip(
-            "Quanto passato si vede nelle tracce. La vista 3D si regola\n"
-            "con REGOLAZIONI DELLA VISTA 3D, come in STUDIO."
-        )
-        form.addRow("secondi", self._seconds_sb)
-        self._gain_sb = QDoubleSpinBox()
-        self._gain_sb.setRange(0.25, 4.0)
-        self._gain_sb.setSingleStep(0.25)
-        self._gain_sb.setDecimals(2)
-        self._gain_sb.setSuffix(" ×")
-        self._gain_sb.setToolTip(
-            "Altezza delle onde nelle tracce. La vista 3D si regola con\n"
-            "REGOLAZIONI DELLA VISTA 3D, come in STUDIO."
-        )
-        form.addRow("ampiezza", self._gain_sb)
+        # The 3D view: the REGOLAZIONI, the very ones of STUDIO.
+        self._style_rows = StyleRows(
+            style if style is not None else ViewStyle(), form, self)
+        self._style_rows.changed.connect(self.style_changed)
+        self._style_more = QWidget()
+        more = QHBoxLayout(self._style_more)
+        more.setContentsMargins(0, 0, 0, 0)
+        same = QLabel("Valgono anche per la vista 3D in STUDIO.")
+        same.setWordWrap(True)
+        same.setStyleSheet(f"color: {TEXT_DIM};")
+        more.addWidget(same, 1)
+        reset = QPushButton("VALORI INIZIALI")
+        reset.setToolTip("Contrasto, spessore, campo visibile, ampiezza e "
+                         "tessuto come all'inizio.")
+        reset.clicked.connect(self._style_rows.reset)
+        more.addWidget(reset)
+        form.addRow("", self._style_more)
+
+        # The traces: how much past and how high.
+        self._seconds_row = SliderRow(
+            2.0, 20.0, 1, lambda v: f"{v:.0f} s",
+            "Quanti secondi di EEG si vedono nelle tracce. Ciò che è già\n"
+            "arrivato resta.", self)
+        form.addRow("campo visibile", self._seconds_row.field)
+        self._gain_row = SliderRow(
+            0.25, 4.0, 100, lambda v: number(v, 2) + " ×",
+            "L'altezza delle onde nelle tracce.", self)
+        form.addRow("ampiezza", self._gain_row.field)
         self._labels_cb = QCheckBox("UOMO / CANE e nomi degli elettrodi")
         form.addRow("scritte", self._labels_cb)
         self._drift_cb = QCheckBox("movimento lento del punto di vista")
         self._drift_cb.setToolTip("Il punto di vista oscilla lentamente, "
-                                  "così la profondità si legge (vista 3D).")
+                                  "così la profondità si legge.")
         form.addRow("", self._drift_cb)
-        self._style_btn = QPushButton("REGOLAZIONI DELLA VISTA 3D")
-        self._style_btn.setToolTip(
-            "Contrasto, spessore delle linee, campo visibile, ampiezza e\n"
-            "tessuto: gli stessi della vista 3D in STUDIO."
-        )
-        self._style_btn.clicked.connect(self.style_requested.emit)
-        form.addRow("", self._style_btn)
         v.addLayout(form)
 
         self._note = QLabel("")
@@ -223,11 +230,11 @@ class ProjectionControls(QDialog):
             settings.content))
         self._fill_layouts()
         self._shape_cb.setCurrentIndex(list(SHAPES).index(settings.shape))
-        self._seconds_sb.setValue(settings.seconds)
-        self._gain_sb.setValue(settings.gain)
+        self._seconds_row.set_value(settings.seconds)
+        self._gain_row.set_value(settings.gain)
         self._labels_cb.setChecked(settings.labels)
         self._drift_cb.setChecked(settings.drift)
-        self._sync_enabled()
+        self._sync_rows()
         self._loading = False
 
         self._screen_cb.currentIndexChanged.connect(self._changed)
@@ -235,9 +242,9 @@ class ProjectionControls(QDialog):
         for w in (self._full_cb, self._labels_cb, self._drift_cb):
             w.toggled.connect(self._changed)
         self._layout_cb.currentIndexChanged.connect(self._changed)
-        self._shape_cb.currentIndexChanged.connect(self._changed)
-        self._seconds_sb.valueChanged.connect(self._changed)
-        self._gain_sb.valueChanged.connect(self._changed)
+        self._shape_cb.currentIndexChanged.connect(self._on_shape)
+        self._seconds_row.moved.connect(self._changed)
+        self._gain_row.moved.connect(self._changed)
         self._update_note()
 
     # ------------------------------------------------------------------ #
@@ -272,17 +279,29 @@ class ProjectionControls(QDialog):
 
     def _on_content(self) -> None:
         self._fill_layouts()
-        self._sync_enabled()
+        self._sync_rows()
         self._changed()
 
-    def _sync_enabled(self) -> None:
+    def _on_shape(self) -> None:
+        self._sync_rows()
+        self._changed()
+
+    def _sync_rows(self) -> None:
+        """Only the rows that act on the content chosen: none is ever shown
+        switched off."""
         is_3d = self._content_cb.currentData() == "3d"
-        self._drift_cb.setEnabled(is_3d)
-        self._shape_cb.setEnabled(is_3d)
-        self._style_btn.setEnabled(is_3d)
-        # The 3D view takes its seconds and height from REGOLAZIONI.
-        self._seconds_sb.setEnabled(not is_3d)
-        self._gain_sb.setEnabled(not is_3d)
+        form = self._form
+        form.setRowVisible(self._shape_cb, is_3d)
+        form.setRowVisible(self._drift_cb, is_3d)
+        self._style_rows.show(is_3d, self._shape_cb.currentData() == "mesh")
+        form.setRowVisible(self._style_more, is_3d)
+        form.setRowVisible(self._seconds_row.field, not is_3d)
+        form.setRowVisible(self._gain_row.field, not is_3d)
+        self.adjustSize()
+
+    def load_style(self) -> None:
+        """The REGOLAZIONI moved elsewhere (STUDIO): show their values."""
+        self._style_rows.load()
 
     def _changed(self, *_args) -> None:
         if self._loading:
@@ -322,8 +341,8 @@ class ProjectionControls(QDialog):
             content=self._content_cb.currentData(),
             layout=self._layout_cb.currentData(),
             shape=self._shape_cb.currentData(),
-            seconds=float(self._seconds_sb.value()),
-            gain=float(self._gain_sb.value()),
+            seconds=self._seconds_row.value(),
+            gain=self._gain_row.value(),
             labels=self._labels_cb.isChecked(),
             drift=self._drift_cb.isChecked(),
         )
@@ -466,18 +485,20 @@ class ProjectionWindow(QWidget):
             self._view.order = s.layout
             self._view.shape = s.shape
             self._view.show_labels = s.labels
-            if self._style is None:      # else REGOLAZIONI decides
+            if self._style is None:      # else the REGOLAZIONI decide
                 self._view.gain = s.gain
+                self._view.style.set("seconds", s.seconds)
             self._view.drift = s.drift
         for wave in self._traces.values():
             wave.gain = s.gain
+            wave.set_seconds_visible(s.seconds)   # keeps what is drawn
             wave.set_labels_visible(s.labels)
 
     def apply(self, settings: ProjectionSettings) -> None:
-        """Take new settings: rebuild only if the picture itself changed."""
+        """Take new settings: rebuild only if the picture itself changed
+        (another length in view is not: what is drawn stays)."""
         old, self._settings = self._settings, settings
-        rebuild = (old.content, old.seconds) != \
-            (settings.content, settings.seconds) or (
+        rebuild = old.content != settings.content or (
             settings.content == "traces"
             and (old.layout, old.labels) != (settings.layout,
                                              settings.labels))

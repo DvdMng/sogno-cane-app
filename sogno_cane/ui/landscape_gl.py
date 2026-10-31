@@ -261,6 +261,35 @@ class _Feed:
         recent = self._recent[:self.filled, self.visible]
         return float(np.median(np.abs(recent)))
 
+    def resize(self, window: int) -> None:
+        """Another window for the scale, keeping its newest samples."""
+        n = self._recent.shape[0]
+        order = (np.arange(self.filled) + self._pos - self.filled) % n
+        kept = self._recent[order][-window:]          # oldest -> newest
+        self._recent = np.zeros((window, self.n_ch), dtype=np.float32)
+        k = kept.shape[0]
+        self._recent[:k] = kept
+        self._pos = k % window
+        self.filled = k
+
+
+def _respaced(old: np.ndarray, step_old: float, m: int,
+              step_new: float) -> np.ndarray:
+    """``old`` columns (oldest first, ``step_old`` s apart) as ``m`` columns
+    ``step_new`` s apart ending at the same instant: each new column is the
+    mean of what the old ones held over its span."""
+    made = old.shape[0]
+    span = made * step_old
+    # The running integral at the old column edges, then anywhere in
+    # between (the old columns are steps).
+    cum = np.vstack([np.zeros((1, old.shape[1])),
+                     np.cumsum(old, axis=0, dtype=np.float64)]) * step_old
+    edges = span - (m - np.arange(m + 1)) * step_new
+    x = np.clip(edges / step_old, 0.0, made)
+    i = np.minimum(np.floor(x).astype(np.int64), made - 1)
+    at = cum[i] + (x - i)[:, None] * old[i] * step_old
+    return ((at[1:] - at[:-1]) / step_new).astype(np.float32)
+
 
 class _Scene:
     """Columns of samples on a conveyor running into the distance, and how
@@ -381,6 +410,32 @@ class _Scene:
             k = int(self._offsets[-1])
             self.pending.update(range(max(0, self.count - 1 - k),
                                       self.count))
+
+    def resized(self, seconds: float) -> "_Scene":
+        """This scene with another field in view. The feeds go on (their
+        cleaning, pacing and scale), and the columns already made are
+        respaced to the new length, so the view keeps its past instead of
+        starting empty. Its GL objects move along; the next frame rebuilds
+        the buffers at the new size."""
+        fresh = _Scene({k: f.profile for k, f in self.feeds.items()},
+                       seconds, self.bg)
+        for name in ("order", "shape", "show_labels", "drift", "navigation",
+                     "style", "_t0", "_next_scale"):
+            setattr(fresh, name, getattr(self, name))
+        fresh.feeds = self.feeds
+        for feed in fresh.feeds.values():
+            feed.resize(fresh.total)
+        made = min(self.count, self.n)
+        m = min(fresh.n, int(made * self.col_s / fresh.col_s + 1e-6))
+        if m > 0:
+            order = np.arange(self.count - made, self.count) % self.n
+            for kind, values in self.values.items():
+                fresh.values[kind][:m] = _respaced(
+                    values[order], self.col_s, m, fresh.col_s)
+            fresh.count = m
+        fresh._gl, self._gl = self._gl, None
+        fresh._layout_key = None
+        return fresh
 
     # ------------------------------------------------------------------ #
     # Layout                                                             #
@@ -941,22 +996,11 @@ class LandscapeGLView(_GLBase):
             ctx.aboutToBeDestroyed.connect(self._release)
 
     def _follow_style(self) -> None:
-        """Another field in view: the scene starts again at that length,
-        keeping everything else (on the context, from paintGL)."""
-        old = self._scene
-        if abs(old.style.seconds - old.seconds) < 1e-6:
-            return
-        fresh = _Scene({k: f.profile for k, f in old.feeds.items()},
-                       old.style.seconds, old.bg)
-        for name in ("order", "shape", "show_labels", "drift", "navigation",
-                     "style"):
-            setattr(fresh, name, getattr(old, name))
-        for kind, feed in old.feeds.items():
-            fresh.feeds[kind].visible = list(feed.visible)
-        fresh._t0 = old._t0
-        old.release_gl()
-        self._ready = fresh.init_gl()
-        self._scene = fresh
+        """Another field in view: the scene goes on at that length with
+        what it holds (on the context, from paintGL)."""
+        scene = self._scene
+        if abs(scene.style.seconds - scene.seconds) >= 1e-6:
+            self._scene = scene.resized(scene.style.seconds)
 
     def _release(self) -> None:
         self.makeCurrent()

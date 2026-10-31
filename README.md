@@ -40,6 +40,13 @@ disattivate) e **binario** a 17 float dell'Unicorn UDP Interface (Hybrid
 Black). Le registrazioni **CSV** e **BDF+** del Recorder si riproducono con
 **FILE**. Guida completa: `portable/EEG_COLLEGAMENTO.txt`.
 
+## Novità della versione 0.9.13
+
+* **Navigazione della vista 3D fluida**: movimento morbido, rotazione
+  attorno al centro della scena con un po' di inerzia, rotella che si
+  avvicina al punto indicato, ritorno all'inquadratura con una
+  transizione.
+
 ## Novità della versione 0.9.12
 
 * **Pannello PROIEZIONE**: solo i controlli che agiscono sul contenuto

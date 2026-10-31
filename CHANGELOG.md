@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.9.13 — navigazione della vista 3D fluida
+
+- **Movimento morbido.** Il mouse dice dove andare e la vista ci arriva in
+  modo continuo, fotogramma per fotogramma, invece di saltare a ogni
+  evento del mouse. La risposta resta pronta: due terzi del movimento in
+  meno di un decimo di secondo.
+- **Rotazione attorno al centro della scena.** La scena gira su se stessa
+  restando al suo posto e della stessa grandezza; prima veniva
+  reinquadrata a ogni angolo, e girando si gonfiava e si restringeva.
+  Lasciata andare in movimento, la rotazione continua un poco e rallenta;
+  un nuovo clic la ferma.
+- **Rotella: ci si avvicina davvero, verso il punto indicato.** La camera
+  entra nella scena, con la prospettiva che cambia, e il punto sotto il
+  puntatore resta lì. Puntando accanto alle onde ci si avvicina alla parte
+  più vicina, senza perdere la scena.
+- **Tasto destro:** la scena segue il puntatore.
+- **Doppio clic:** il ritorno all'inquadratura iniziale è una transizione,
+  non un salto.
+- L'inquadratura iniziale non cambia: finché non si tocca la vista, il
+  disegno è identico a prima, pixel per pixel. Il punto di vista salvato
+  dalle versioni precedenti viene ripreso (lo spostamento di allora no).
+
+Test: +4, **335 totali**.
+
 ## 0.9.12 — pannello della proiezione: solo ciò che si regola
 
 - **Pannello PROIEZIONE senza campi spenti.** Con la vista 3D «secondi» e

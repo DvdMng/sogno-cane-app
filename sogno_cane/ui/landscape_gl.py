@@ -326,12 +326,14 @@ class _Scene:
         self.show_labels = True
         self.drift = True
         self.navigation = lv.Navigation()
+        self.nav_frame: lv.NavFrame | None = None     # the last frame drawn
+        self.px = 1.0               # drawing pixels per widget pixel
         self.bg = QColor(background)
         self._t0 = time.perf_counter()
         self._next_scale = 0.0
         self._layout_key = None
         self._fit_key = None
-        self._fit = (1.0, 0.0, 0.0)
+        self._fit = None            # (scale, off_x, off_y), pivot
         self._gl = None             # GL objects, made on the context
         self.labels: list[tuple[str, float, float]] = []
 
@@ -525,42 +527,30 @@ class _Scene:
         relief = lv._MESH_RELIEF if self.shape == "mesh" else 1.0
         return lv._HEIGHT * self.gain * relief
 
-    def _camera(self, half: float, phase: float, navigated: bool = True):
-        """As the QPainter view: to one side, looking along the strands
-        into the past; higher for the surface (a three-quarter view). Then
-        turned as the user has turned it."""
+    def _eye(self, half: float, phase: float):
+        """The framed eye and the point it looks at, as the QPainter view:
+        to one side, looking along the strands into the past; higher for
+        the surface (a three-quarter view)."""
         sway = math.sin(phase)
-        target = np.array([0.35 * half, 0.0, 0.42 * lv._DEPTH])
+        look = np.array([0.35 * half, 0.0, 0.42 * lv._DEPTH])
         mesh = self.shape == "mesh"
-        pos = np.array([
+        eye = np.array([
             -half - 3.2 + 1.4 * sway,
             (4.4 if mesh else 2.3) + 0.35 * math.sin(phase * 0.7 + 1.0),
             -5.6 if mesh else -4.6,
         ])
-        if navigated:
-            pos = self.navigation.orbit(pos, target)
-        f = target - pos
-        f /= np.linalg.norm(f)
-        r = np.cross([0.0, 1.0, 0.0], f)
-        r /= np.linalg.norm(r)
-        u = np.cross(f, r)
-        return pos, r, u, f
+        return eye, look
 
-    @staticmethod
-    def _project(points: np.ndarray, cam):
-        pos, r, u, f = cam
-        v = points - pos
-        zc = np.maximum(v @ f, 1e-2)
-        return (v @ r) / zc, (v @ u) / zc
+    _project = staticmethod(lv.project)
 
     def _fit_to(self, half: float, w: int, h: int):
-        nav = self.navigation
-        key = (w, h, round(half, 3), self.shape, round(self.gain, 3),
-               round(nav.yaw, 3), round(nav.pitch, 3))
+        """The framed view's scale and offsets, so the scene fills the
+        frame, and the pivot it turns about. The same however the view is
+        turned: turning, the scene keeps its size."""
+        key = (w, h, round(half, 3), self.shape, round(self.gain, 3))
         if key == self._fit_key:
             return self._fit
-        # Framed as turned: the scene fills the frame at any angle.
-        cam = self._camera(half, 0.0)
+        eye, look = self._eye(half, 0.0)
         amp = self._amp()
         corners = np.array([
             [x, y, z]
@@ -568,12 +558,9 @@ class _Scene:
             for y in (-1.3 * amp, 1.3 * amp)     # room for a burst
             for z in (0.0, lv._DEPTH * 0.9)
         ])
-        u, v = self._project(corners, cam)
-        span_x, span_y = u.max() - u.min(), v.max() - v.min()
-        scale = min(_FIT_MARGIN[0] * w / span_x, _FIT_MARGIN[1] * h / span_y)
-        off_x = 0.52 * w - scale * (u.max() + u.min()) / 2
-        off_y = 0.56 * h + scale * (v.max() + v.min()) / 2
-        self._fit_key, self._fit = key, (scale, off_x, off_y)
+        self._fit_key = key
+        self._fit = (lv.fit_frame(corners, lv.look_at(eye, look), w, h,
+                                  _FIT_MARGIN), lv.pivot_of(look))
         return self._fit
 
     @staticmethod
@@ -772,9 +759,14 @@ class _Scene:
         half = max(abs(strands[0][3]), abs(strands[-1][3])) + lv._SPACING
         phase = 2.0 * math.pi * (now - self._t0) / lv._DRIFT_PERIOD_S \
             if self.drift else 0.0
-        cam = self._camera(half, phase)
-        scale, off_x, off_y = self.navigation.frame(
-            self._fit_to(half, w, h), w, h)
+        self.navigation.step(now)
+        eye, look = self._eye(half, phase)
+        fit, pivot = self._fit_to(half, w, h)
+        cam, scale, off_x, off_y = lv.navigated(self.navigation, eye, look,
+                                                pivot, fit)
+        self.nav_frame = lv.NavFrame(cam, scale, off_x, off_y, pivot,
+                                     self.navigation.shift, self.px,
+                                     (-half, half, 0.0, lv._DEPTH))
         mesh = self.shape == "mesh" and len(strands) >= 2
         amp = self._amp()
         made = min(self.count, n)
@@ -943,6 +935,11 @@ class LandscapeGLView(_GLBase):
     style = _get("style")
     del _get
 
+    @property
+    def nav_frame(self):
+        """The last frame drawn, for the mouse (None before the first)."""
+        return self._scene.nav_frame
+
     def push(self, kind: str, packet: UnicornPacket) -> None:
         self._scene.push(kind, packet, time.perf_counter())
 
@@ -1033,6 +1030,7 @@ class LandscapeGLView(_GLBase):
         now = time.perf_counter()
         self._follow_style()
         self._scene.advance(now)
+        self._scene.px = dpr
         ctx = self.context()
         f = ctx.functions()
         target = self.defaultFramebufferObject()

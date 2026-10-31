@@ -685,15 +685,20 @@ def test_the_3d_view_turns_moves_and_comes_closer_with_the_mouse(app):
     framed = view.grab().toImage()
     _drag(view, (400, 220), (520, 260))                # turn
     nav = view.navigation
-    assert nav.yaw != 0.0 and nav.pitch != 0.0
+    goal = nav.goal()
+    assert goal["yaw"] != 0.0 and goal["pitch"] != 0.0
+    nav.settle()                                       # eased: there now
     turned = view.grab().toImage()
     assert turned != framed
     _drag(view, (400, 220), (480, 220), Qt.MouseButton.RightButton)
-    assert nav.pan_x > 0.0                             # moved, right
+    moved = nav.goal()
+    assert (moved["shift_x"], moved["shift_z"]) != (0.0, 0.0)
     _wheel(view, 3)
-    assert nav.zoom > 1.2                              # closer
+    assert nav.goal()["dolly"] < 0.7                   # closer
     _double_click(view)
-    assert nav.to_dict() == type(nav)().to_dict()      # framed again
+    assert nav.goal() == type(nav)().goal()            # framed again
+    assert nav.moving                                  # ... smoothly
+    nav.settle()
     assert view.grab().toImage() == framed
 
 
@@ -702,20 +707,22 @@ def test_the_point_of_view_is_kept_and_the_projector_shares_it(app,
     from sogno_cane.io.archive import Archive
     from sogno_cane.ui.main_window import MainWindow
     win = MainWindow(archive=Archive(root=str(tmp_path / "rec")))
-    win._landscape.navigation.turn(150.0, 40.0)
-    win._landscape.navigation.scale(4)
-    kept = win._landscape.navigation.to_dict()
+    nav = win._landscape.navigation
+    nav.turn(150.0, 40.0)
+    nav.zoom(4)
+    nav.settle()
+    kept = nav.to_dict()
     win._show_projection_controls()
     win._toggle_projection()
     proj = win._projection
-    assert proj._view.navigation is win._landscape.navigation
-    win._landscape.navigation.move(0.1, 0.0)           # turned on the PC
-    assert proj._view.navigation.pan_x == 0.1          # and on the screen
+    assert proj._view.navigation is nav
+    nav.slide(np.array([0.5, 0.0, 0.0]))               # moved on the PC
+    assert proj._view.navigation.goal()["shift_x"] == 0.5   # and there
     _double_click(proj._view)                          # still closes it
     _pump(30)
     assert win._projection is None
-    assert win._landscape.navigation.pan_x == 0.1      # view untouched
-    win._landscape.navigation.move(-0.1, 0.0)
+    assert nav.goal()["shift_x"] == 0.5                # view untouched
+    nav.slide(np.array([-0.5, 0.0, 0.0]))
     win.close()
     again = MainWindow(archive=Archive(root=str(tmp_path / "rec")))
     assert again._landscape.navigation.to_dict() == kept

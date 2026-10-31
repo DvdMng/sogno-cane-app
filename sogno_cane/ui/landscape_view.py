@@ -80,96 +80,302 @@ _MESH_LINES = 560            # the surface is soft anyway, and costs more
 # drawn is time taken from the MIDI engine (same interpreter).
 FRAME_MS = 33
 _DRIFT_PERIOD_S = 70.0       # slow drift of the point of view
-# The point of view, moved with the mouse: drag to turn the scene, right
-# button (or Shift) to move it in the frame, wheel to come closer,
-# double-click for the framed view again.
+# The point of view, moved with the mouse: drag to turn the scene about its
+# middle, right button (or Shift) to move it, wheel to come closer to the
+# point under the pointer, double-click for the framed view again. What the
+# mouse asks is reached smoothly, frame by frame, and a flick keeps turning
+# for a moment.
 NAVIGATION_HINT = ("trascina: ruota  ·  tasto destro: sposta  ·  "
-                   "rotella: avvicina  ·  doppio clic: inquadratura iniziale")
+                   "rotella: avvicina dove punti  ·  "
+                   "doppio clic: inquadratura iniziale")
 _TURN = 0.006                # radians per pixel dragged
-_ZOOM_RANGE = (0.5, 4.0)
+_ZOOM_STEP = 1.15            # closer by this much per wheel notch
+_DOLLY_RANGE = (0.18, 2.5)   # distance to the pivot, times the framed one
+_SHIFT_LIMIT = 30.0          # world units the pivot may be moved, each way
 _PITCH_RANGE = (math.radians(4.0), math.radians(85.0))
+# Seconds to cover two thirds of the way to what the mouse asked, for yaw,
+# pitch, distance and the three components of the move.
+_EASE_S = np.array([0.09, 0.09, 0.13, 0.07, 0.07, 0.07])
+_SPIN_DECAY_S = 0.3          # a flick slows down over this
+_SPIN_MIN = 0.5              # rad/s: a slower release simply stops
+_SPIN_MAX = 5.0              # rad/s
+
+
+def look_at(eye: np.ndarray, target: np.ndarray) -> tuple:
+    """(eye, right, up, forward): from ``eye`` toward ``target``, level."""
+    f = np.asarray(target, dtype=float) - eye
+    f = f / np.linalg.norm(f)
+    r = np.cross([0.0, 1.0, 0.0], f)
+    n = float(np.linalg.norm(r))
+    r = r / n if n > 1e-9 else np.array([1.0, 0.0, 0.0])
+    return eye, r, np.cross(f, r), f
+
+
+def project(points: np.ndarray, cam) -> tuple[np.ndarray, np.ndarray]:
+    """Camera-plane coordinates of ``points`` (n, 3)."""
+    eye, r, u, f = cam
+    v = points - eye
+    zc = np.maximum(v @ f, 1e-2)
+    return (v @ r) / zc, (v @ u) / zc
+
+
+def fit_frame(corners: np.ndarray, cam, w: int, h: int,
+              fill: tuple) -> tuple:
+    """Pixels per unit and offsets so ``corners`` fill the frame (``fill``
+    shares of it), as the framed view has always placed them."""
+    u, v = project(corners, cam)
+    scale = min(fill[0] * w / (u.max() - u.min()),
+                fill[1] * h / (v.max() - v.min()))
+    return (scale, 0.52 * w - scale * (u.max() + u.min()) / 2,
+            0.56 * h + scale * (v.max() + v.min()) / 2)
+
+
+def pivot_of(look: np.ndarray) -> np.ndarray:
+    """What the scene turns about: its middle across, on the surface, at
+    the depth the framed view looks at. Turning, it stays in place."""
+    return np.array([0.0, 0.0, float(look[2])])
 
 
 class Navigation:
-    """Where the user has moved the point of view: turned about the middle
-    of the scene (yaw, pitch, radians), the lens (zoom), the scene moved in
-    its frame (pan, shares of the frame). The defaults give the framed
-    view; STUDIO and the projection share one, so the projector shows what
-    is set on the PC."""
+    """Where the user has moved the point of view: a camera rig turned
+    about a pivot in the middle of the scene (yaw, pitch, radians), at a
+    distance from it (dolly, times the framed one), the pivot moved in the
+    scene (shift, world units). The mouse sets where to go; ``step``
+    brings what is drawn there smoothly at every frame, whatever the rate
+    of the mouse events, and lets a flick turn on for a moment. The
+    defaults give the framed view. STUDIO and the projection share one:
+    each frame steps it by the clock, so two views stepping it in the same
+    frame move it once."""
 
-    _FIELDS = ("yaw", "pitch", "zoom", "pan_x", "pan_y")
+    _FIELDS = ("yaw", "pitch", "dolly", "shift_x", "shift_y", "shift_z")
+    _DEFAULT = np.array([0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
 
     def __init__(self) -> None:
-        self.reset()
+        self._goal = self._DEFAULT.copy()
+        self._shown = self._DEFAULT.copy()
+        self._spin = np.zeros(2)            # rad/s, yaw and pitch
+        self._swipe = np.zeros(2)           # drag speed, for a flick
+        self._moved: float | None = None    # last turn of the drag
+        self._stamp: float | None = None    # last step
+
+    # What is drawn.
+    yaw = property(lambda self: float(self._shown[0]))
+    pitch = property(lambda self: float(self._shown[1]))
+    dolly = property(lambda self: float(self._shown[2]))
+    shift = property(lambda self: self._shown[3:].copy())
+
+    def goal(self) -> dict:
+        """Where the mouse has asked to go."""
+        return dict(zip(self._FIELDS, (float(v) for v in self._goal)))
+
+    @property
+    def moving(self) -> bool:
+        return bool(self._spin.any()) or not np.allclose(
+            self._shown, self._goal, atol=1e-4)
 
     def reset(self) -> None:
-        self.yaw = 0.0
-        self.pitch = 0.0
-        self.zoom = 1.0
-        self.pan_x = 0.0
-        self.pan_y = 0.0
+        """Back to the framed view, smoothly and the short way round."""
+        self.hold()
+        goal = self._DEFAULT.copy()
+        goal[0] = self._shown[0] - math.remainder(self._shown[0],
+                                                  2.0 * math.pi)
+        self._goal = goal
+
+    def settle(self) -> None:
+        """Be where asked at once (loading a saved view, tests)."""
+        self.hold()
+        self._shown = self._goal.copy()
 
     def to_dict(self) -> dict:
-        return {name: float(getattr(self, name)) for name in self._FIELDS}
+        out = self.goal()
+        out["yaw"] = math.remainder(out["yaw"], 2.0 * math.pi)
+        return out
 
     @classmethod
     def from_dict(cls, data) -> "Navigation":
         nav = cls()
         if isinstance(data, dict):
-            for name in cls._FIELDS:
-                try:
-                    value = float(data.get(name, getattr(nav, name)))
-                except (TypeError, ValueError):
-                    continue
-                if math.isfinite(value):
-                    setattr(nav, name, value)
-        nav.yaw = math.remainder(nav.yaw, 2.0 * math.pi)
-        nav.pitch = min(math.pi / 2, max(-math.pi / 2, nav.pitch))
-        nav.zoom = min(_ZOOM_RANGE[1], max(_ZOOM_RANGE[0], nav.zoom))
-        nav.pan_x = min(1.0, max(-1.0, nav.pan_x))
-        nav.pan_y = min(1.0, max(-1.0, nav.pan_y))
+            goal = nav._goal
+            for i, name in enumerate(cls._FIELDS):
+                value = _finite(data.get(name))
+                if value is not None:
+                    goal[i] = value
+            zoom = _finite(data.get("zoom"))
+            if "dolly" not in data and zoom and zoom > 0.0:
+                goal[2] = 1.0 / zoom        # 0.9.10-0.9.12: a lens zoom
+            goal[0] = math.remainder(goal[0], 2.0 * math.pi)
+            goal[1] = min(math.pi / 2, max(-math.pi / 2, goal[1]))
+            goal[2] = min(_DOLLY_RANGE[1], max(_DOLLY_RANGE[0], goal[2]))
+            goal[3:] = np.clip(goal[3:], -_SHIFT_LIMIT, _SHIFT_LIMIT)
+        nav.settle()
         return nav
 
-    def turn(self, dx: float, dy: float) -> None:
+    # ------------------------------------------------------------------ #
+    # What the mouse asks                                                #
+    # ------------------------------------------------------------------ #
+
+    def turn(self, dx: float, dy: float, now: float | None = None) -> None:
         """As if the scene were grabbed: right turns it right, down tips
-        its far side toward the viewer."""
-        self.yaw = math.remainder(self.yaw - dx * _TURN, 2.0 * math.pi)
-        self.pitch += dy * _TURN
+        its far side toward the viewer. ``now`` (a drag) keeps track of the
+        speed, for a flick."""
+        step = np.array([-dx * _TURN, dy * _TURN])
+        self._goal[:2] += step
+        if now is None:
+            return
+        if self._moved is not None and now > self._moved:
+            dt = now - self._moved
+            self._swipe += min(1.0, dt / 0.05) * (step / dt - self._swipe)
+        self._moved = now
 
-    def move(self, fx: float, fy: float) -> None:
-        self.pan_x = min(1.0, max(-1.0, self.pan_x + fx))
-        self.pan_y = min(1.0, max(-1.0, self.pan_y + fy))
+    def let_go(self, now: float) -> None:
+        """The end of a drag: if it was still moving fast, it turns on."""
+        speed = float(np.hypot(*self._swipe))
+        if self._moved is not None and now - self._moved < 0.06 \
+                and speed > _SPIN_MIN:
+            self._spin = self._swipe * min(1.0, _SPIN_MAX / speed)
+        self._swipe = np.zeros(2)
+        self._moved = None
 
-    def scale(self, notches: float) -> None:
-        self.zoom = min(_ZOOM_RANGE[1],
-                        max(_ZOOM_RANGE[0], self.zoom * 1.1 ** notches))
+    def hold(self) -> None:
+        """Stop a flick: the scene grabbed again."""
+        self._spin = np.zeros(2)
+        self._swipe = np.zeros(2)
+        self._moved = None
 
-    def orbit(self, pos: np.ndarray, target: np.ndarray) -> np.ndarray:
-        """The eye at ``pos`` turned about ``target``: about the vertical,
-        then up or down, kept 4 to 85 degrees above the surface (the pitch
-        is held there too, so dragging back answers at once)."""
-        off = pos - target
-        dist = float(np.linalg.norm(off))
-        az = math.atan2(off[0], -off[2]) + self.yaw
-        el0 = math.asin(max(-1.0, min(1.0, off[1] / dist)))
-        el = min(_PITCH_RANGE[1], max(_PITCH_RANGE[0], el0 + self.pitch))
-        self.pitch = el - el0
-        return target + dist * np.array([
-            math.cos(el) * math.sin(az),
-            math.sin(el),
-            -math.cos(el) * math.cos(az),
-        ])
+    def slide(self, vector) -> None:
+        """Move the scene by ``vector``, in world units."""
+        self._goal[3:] = np.clip(self._goal[3:] + vector,
+                                 -_SHIFT_LIMIT, _SHIFT_LIMIT)
 
-    def frame(self, fit: tuple, w: int, h: int) -> tuple:
-        """The fit (scale, off_x, off_y) with the lens and the move: the
-        middle of the scene stays put as the lens changes."""
-        scale, off_x, off_y = fit
-        return scale * self.zoom, off_x + self.pan_x * w, \
-            off_y + self.pan_y * h
+    def zoom(self, notches: float, toward=None, pivot=None) -> None:
+        """Closer (``notches`` > 0) or farther; toward the world point
+        ``toward`` if given, which then stays under the pointer (``pivot``:
+        the scene's own, unmoved)."""
+        old = float(self._goal[2])
+        new = min(_DOLLY_RANGE[1],
+                  max(_DOLLY_RANGE[0], old / _ZOOM_STEP ** notches))
+        self._goal[2] = new
+        if toward is not None and pivot is not None:
+            k = new / old
+            self._goal[3:] = np.clip(
+                k * self._goal[3:] + (1.0 - k) * (np.asarray(toward)
+                                                  - np.asarray(pivot)),
+                -_SHIFT_LIMIT, _SHIFT_LIMIT)
+
+    # ------------------------------------------------------------------ #
+    # What is drawn                                                      #
+    # ------------------------------------------------------------------ #
+
+    def step(self, now: float) -> None:
+        """Bring what is drawn toward the goal, by the time passed."""
+        if self._stamp is None:
+            self._stamp = now
+        dt = min(0.1, max(0.0, now - self._stamp))
+        self._stamp = now
+        if dt <= 0.0:
+            return
+        if self._spin.any():
+            self._goal[:2] += self._spin * dt
+            self._spin *= math.exp(-dt / _SPIN_DECAY_S)
+            if float(np.hypot(*self._spin)) < 0.05:
+                self._spin = np.zeros(2)
+        self._shown += (1.0 - np.exp(-dt / _EASE_S)) * (self._goal
+                                                         - self._shown)
+        turns = round(self._shown[0] / (2.0 * math.pi))
+        if turns:                    # both near zero, the same turns off
+            self._goal[0] -= turns * 2.0 * math.pi
+            self._shown[0] -= turns * 2.0 * math.pi
+
+    def rig(self, eye: np.ndarray, look: np.ndarray,
+            pivot: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """The eye and the point it looks at, as navigated: the framed ones
+        turned about ``pivot``, brought closer to it, moved with it. The
+        eye stays 4 to 85 degrees above the surface (the pitch is held
+        there too, so dragging back answers at once)."""
+        v0, w0 = eye - pivot, look - pivot
+        flat = math.hypot(v0[0], v0[2])
+        el0 = math.atan2(v0[1], flat)
+        lo, hi = _PITCH_RANGE[0] - el0, _PITCH_RANGE[1] - el0
+        for state in (self._goal, self._shown):
+            state[1] = min(hi, max(lo, state[1]))
+        if self._goal[1] in (lo, hi):
+            self._spin[1] = 0.0
+        yaw, pitch, dolly = self._shown[:3]
+        axis = np.array([-v0[2], 0.0, v0[0]]) / max(flat, 1e-9)
+        cp, sp = math.cos(pitch), math.sin(pitch)
+        cy, sy = math.cos(yaw), math.sin(yaw)
+
+        def turned(v: np.ndarray) -> np.ndarray:
+            # Up about the line across the view, then round the vertical.
+            v = v * cp + np.cross(axis, v) * sp + axis * (axis @ v) * (1 - cp)
+            return np.array([v[0] * cy - v[2] * sy, v[1],
+                             v[0] * sy + v[2] * cy])
+
+        base = pivot + self._shown[3:]
+        return base + dolly * turned(v0), base + dolly * turned(w0)
+
+
+def _finite(value) -> float | None:
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def navigated(nav: Navigation, eye: np.ndarray, look: np.ndarray,
+              pivot: np.ndarray, fit: tuple) -> tuple:
+    """The camera as navigated, and the scale and offsets to draw it with:
+    the framed view's, moved so the pivot stays where the framed view shows
+    it. Turning about it, the scene stays in place and keeps its size."""
+    cam = look_at(*nav.rig(eye, look, pivot))
+    scale, off_x, off_y = fit
+    p = np.asarray(pivot, dtype=float)[None, :]
+    u0, v0 = project(p, look_at(eye, look))
+    u1, v1 = project(p + nav.shift, cam)
+    return (cam, scale, off_x + scale * float(u0[0] - u1[0]),
+            off_y - scale * float(v0[0] - v1[0]))
+
+
+class NavFrame:
+    """The last frame drawn, as the mouse needs it: its camera, scale and
+    offsets (in drawing pixels, ``px`` per widget pixel), the pivot, and
+    where the waves lie on the surface (x from, x to, depth from, to)."""
+
+    def __init__(self, cam, scale: float, off_x: float, off_y: float,
+                 pivot: np.ndarray, shift: np.ndarray, px: float,
+                 bounds: tuple = (-np.inf, np.inf, -np.inf, np.inf)) -> None:
+        self.cam, self.scale = cam, scale
+        self.off_x, self.off_y = off_x, off_y
+        self.pivot, self.shift, self.px = pivot, shift, px
+        self.bounds = bounds
+
+    def slide(self, dx: float, dy: float) -> np.ndarray:
+        """The move (world units) that keeps the scene under the pointer
+        dragged by ``dx``, ``dy`` widget pixels."""
+        eye, r, u, f = self.cam
+        depth = max(0.5, float((self.pivot + self.shift - eye) @ f))
+        return (-dx * r + dy * u) * (depth * self.px / self.scale)
+
+    def ground_at(self, x: float, y: float) -> np.ndarray | None:
+        """The point of the surface under widget pixel (``x``, ``y``), or
+        beside the waves the nearest point of them (coming closer to empty
+        ground would lose the scene); None above the horizon."""
+        eye, r, u, f = self.cam
+        ray = f + (x * self.px - self.off_x) / self.scale * r \
+            + (self.off_y - y * self.px) / self.scale * u
+        if ray[1] > -1e-6:
+            return None
+        hit = eye + ray * (-eye[1] / ray[1])
+        x0, x1, z0, z1 = self.bounds
+        hit[0] = min(x1, max(x0, hit[0]))
+        hit[2] = min(z1, max(z0, hit[2]))
+        return hit if np.all(np.isfinite(hit)) else None
 
 
 def nav_press(view, event) -> None:
     view._drag = (event.button(), event.modifiers(), event.position())
+    view.navigation.hold()
     view.setCursor(Qt.CursorShape.ClosedHandCursor)
     event.accept()
 
@@ -183,29 +389,36 @@ def nav_move(view, event) -> None:
     view._drag = (button, mods, pos)
     if button == Qt.MouseButton.LeftButton \
             and not mods & Qt.KeyboardModifier.ShiftModifier:
-        view.navigation.turn(dx, dy)
-    else:
-        view.navigation.move(dx / max(1, view.width()),
-                             dy / max(1, view.height()))
+        view.navigation.turn(dx, dy, time.perf_counter())
+    elif view.nav_frame is not None:
+        view.navigation.slide(view.nav_frame.slide(dx, dy))
     view.update()
     event.accept()
 
 
 def nav_release(view, event) -> None:
+    if view._drag is not None:
+        view.navigation.let_go(time.perf_counter())
     view._drag = None
     view.unsetCursor()
     event.accept()
 
 
 def nav_wheel(view, event) -> None:
-    view.navigation.scale(event.angleDelta().y() / 120.0)
+    frame = view.nav_frame
+    toward = None
+    if frame is not None:
+        pos = event.position()
+        toward = frame.ground_at(pos.x(), pos.y())
+    view.navigation.zoom(event.angleDelta().y() / 120.0, toward,
+                         frame.pivot if frame is not None else None)
     view.update()
     event.accept()
 
 
 def nav_double_click(view, event) -> None:
-    """The framed view again; where double-click means something else (it
-    closes the projection), the click goes on to the window."""
+    """The framed view again, smoothly; where double-click means something
+    else (it closes the projection), the click goes on to the window."""
     if not view.reset_on_double_click:
         event.ignore()
         return
@@ -351,6 +564,7 @@ class LandscapeView(QWidget):
         self.show_labels = True
         self.drift = True
         self.navigation = Navigation()
+        self.nav_frame: NavFrame | None = None     # the last frame drawn
         self.reset_on_double_click = True
         self._drag = None
         self._bg = QColor(background)
@@ -358,7 +572,7 @@ class LandscapeView(QWidget):
         self._t0 = time.perf_counter()
         self._last = self._t0
         self._fit_key = None
-        self._fit = (1.0, 0.0, 0.0)
+        self._fit = None             # (scale, off_x, off_y), pivot
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
         self.setMinimumHeight(180)
 
@@ -461,45 +675,31 @@ class LandscapeView(QWidget):
         mid = (xs[0] + xs[-1]) / 2.0
         return [r + (x - mid,) for r, x in zip(ordered, xs)]
 
-    def _camera(self, half_width: float, phase: float,
-                navigated: bool = True):
-        """Low and to one side, looking along the strands into the past;
-        higher for the surface (a three-quarter view from above), where a
-        low eye made the peaks overlap and the grid unreadable. Then turned
-        as the user has turned it."""
+    def _eye(self, half_width: float, phase: float):
+        """The framed eye and the point it looks at: low and to one side,
+        looking along the strands into the past; higher for the surface (a
+        three-quarter view from above), where a low eye made the peaks
+        overlap and the grid unreadable."""
         sway = math.sin(phase)
-        target = np.array([0.35 * half_width, 0.0, 0.42 * _DEPTH])
+        look = np.array([0.35 * half_width, 0.0, 0.42 * _DEPTH])
         mesh = self.shape == "mesh"
-        pos = np.array([
+        eye = np.array([
             -half_width - 3.2 + 1.4 * sway,
             (5.2 if mesh else 2.3) + 0.35 * math.sin(phase * 0.7 + 1.0),
             -6.0 if mesh else -4.6,
         ])
-        if navigated:
-            pos = self.navigation.orbit(pos, target)
-        f = target - pos
-        f /= np.linalg.norm(f)
-        r = np.cross([0.0, 1.0, 0.0], f)
-        r /= np.linalg.norm(r)
-        u = np.cross(f, r)
-        return pos, r, u, f
+        return eye, look
 
-    @staticmethod
-    def _project(points: np.ndarray, cam) -> tuple[np.ndarray, np.ndarray]:
-        pos, r, u, f = cam
-        v = points - pos
-        zc = np.maximum(v @ f, 1e-2)
-        return (v @ r) / zc, (v @ u) / zc
+    _project = staticmethod(project)
 
     def _fit_to(self, half_width: float, w: int, h: int):
-        """Pixels per unit and offsets so the scene fills the frame."""
-        nav = self.navigation
-        key = (w, h, round(half_width, 3), self.shape,
-               round(nav.yaw, 3), round(nav.pitch, 3))
+        """The framed view's scale and offsets, so the scene fills the
+        frame, and the pivot it turns about. The same however the view is
+        turned: turning, the scene keeps its size."""
+        key = (w, h, round(half_width, 3), self.shape)
         if key == self._fit_key:
             return self._fit
-        # Framed as turned: the scene fills the frame at any angle.
-        cam = self._camera(half_width, 0.0)
+        eye, look = self._eye(half_width, 0.0)
         mesh = self.shape == "mesh"
         tall = _HEIGHT * (_MESH_RELIEF if mesh else 1.0)
         corners = np.array([
@@ -508,14 +708,11 @@ class LandscapeView(QWidget):
             for y in (-tall, tall)
             for z in (0.0, _DEPTH * (0.9 if mesh else 0.7))
         ])
-        u, v = self._project(corners, cam)
-        span_x, span_y = u.max() - u.min(), v.max() - v.min()
         # The surface stays inside the frame, with a margin all round.
-        fill_x, fill_y = (0.90, 0.86) if mesh else (1.0, 0.96)
-        scale = min(fill_x * w / span_x, fill_y * h / span_y)
-        off_x = 0.52 * w - scale * (u.max() + u.min()) / 2
-        off_y = 0.56 * h + scale * (v.max() + v.min()) / 2
-        self._fit_key, self._fit = key, (scale, off_x, off_y)
+        fill = (0.90, 0.86) if mesh else (1.0, 0.96)
+        self._fit_key = key
+        self._fit = (fit_frame(corners, look_at(eye, look), w, h, fill),
+                     pivot_of(look))
         return self._fit
 
     # ------------------------------------------------------------------ #
@@ -561,10 +758,16 @@ class LandscapeView(QWidget):
         half = max(abs(rows[0][3]), abs(rows[-1][3])) + _SPACING
         phase = 2.0 * math.pi * (now - self._t0) / _DRIFT_PERIOD_S \
             if self.drift else 0.0
-        cam = self._camera(half, phase)
+        self.navigation.step(now)
+        eye, look = self._eye(half, phase)
         w, h = img.width(), img.height()
-        scale, off_x, off_y = self.navigation.frame(
-            self._fit_to(half, w, h), w, h)
+        fit, pivot = self._fit_to(half, w, h)
+        cam, scale, off_x, off_y = navigated(self.navigation, eye, look,
+                                             pivot, fit)
+        self.nav_frame = NavFrame(cam, scale, off_x, off_y, pivot,
+                                  self.navigation.shift,
+                                  self._render_scale(),
+                                  (-half, half, 0.0, _DEPTH))
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         fronts: dict[str, list[tuple[float, float]]] = {}
         drawn, world = [], []

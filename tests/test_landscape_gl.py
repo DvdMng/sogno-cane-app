@@ -131,39 +131,186 @@ def test_a_chaotic_moment_stays_large_against_the_calm():
     assert calm_after > 0.8 * calm_before
 
 
-def test_navigation_starts_from_the_framed_view_and_stays_above():
-    """Field request: "rendi navigabile il 3d". Untouched, the point of
-    view is the framed one; turned, it stays 4 to 85 degrees above the
-    surface, and dragging back answers at once (no dead zone)."""
+def _framed(scene, w=960, h=540):
+    eye, look = scene._eye(6.0, 0.0)
+    fit, pivot = scene._fit_to(6.0, w, h)
+    return eye, look, fit, pivot
+
+
+def _on_screen(nav, eye, look, fit, pivot, point):
+    from sogno_cane.ui import landscape_view as lv
+    cam, scale, ox, oy = lv.navigated(nav, eye, look, pivot, fit)
+    u, v = lv.project(np.asarray(point, dtype=float)[None], cam)
+    return ox + scale * float(u[0]), oy - scale * float(v[0])
+
+
+def test_navigation_turns_the_scene_about_its_middle_and_stays_above():
+    """Field requests: "rendi navigabile il 3d", then "molto più fluida e
+    migliore". Untouched, the point of view is the framed one. Turned, the
+    scene turns about the middle of what is framed, which stays put on the
+    screen, and keeps its size (before, it was framed again at every angle
+    and swelled and shrank while turning); the eye stays 4 to 85 degrees
+    above the surface, and dragging back answers at once (no dead
+    zone)."""
     import math
     from sogno_cane.ui.landscape_view import Navigation
     scene = _scene()
     scene.shape = "mesh"
-    base = scene._camera(6.0, 0.3, navigated=False)
-    same = scene._camera(6.0, 0.3)
-    assert np.allclose(base[0], same[0])
-    target = np.array([0.35 * 6.0, 0.0, 0.42 * 26.0])
+    eye, look, fit, pivot = _framed(scene)
     nav = Navigation()
-    nav.turn(400.0, 0.0)                         # a turn: same distance
-    turned = nav.orbit(base[0], target)
-    assert math.isclose(np.linalg.norm(turned - target),
-                        np.linalg.norm(base[0] - target))
-    assert not np.allclose(turned, base[0])
+    e, l = nav.rig(eye, look, pivot)
+    assert np.allclose(e, eye) and np.allclose(l, look)
+    still = _on_screen(nav, eye, look, fit, pivot, pivot)
+    nav.turn(400.0, 120.0)
+    nav.settle()
+    assert np.allclose(_on_screen(nav, eye, look, fit, pivot, pivot), still)
+    assert scene._fit_to(6.0, 960, 540) == (fit, pivot)  # same size
+    e, _ = nav.rig(eye, look, pivot)
+    assert math.isclose(np.linalg.norm(e - pivot),
+                        np.linalg.norm(eye - pivot))
     nav.turn(0.0, 5000.0)                        # far past the top
-    top = nav.orbit(base[0], target)
-    assert math.degrees(math.asin((top - target)[1] / np.linalg.norm(
-        top - target))) <= 85.0 + 1e-6
+    nav.settle()
+    top, _ = nav.rig(eye, look, pivot)
+    up = top - pivot
+    assert math.degrees(math.atan2(up[1], math.hypot(up[0], up[2]))) \
+        <= 85.0 + 1e-6
     nav.turn(0.0, -20.0)                         # back: moves at once
-    assert not np.allclose(nav.orbit(base[0], target), top)
-    nav.scale(30)
-    assert nav.zoom == 4.0
-    nav.move(5.0, -5.0)
-    assert (nav.pan_x, nav.pan_y) == (1.0, -1.0)
+    nav.settle()
+    assert not np.allclose(nav.rig(eye, look, pivot)[0], top)
+
+
+def test_navigation_eases_to_where_the_mouse_asks():
+    """Each frame takes a part of the way to what the mouse asked, never
+    past it, whatever the frame rate; two views stepping it in the same
+    frame (STUDIO and the projection) move it once."""
+    from sogno_cane.ui.landscape_view import Navigation
+
+    def run(fps, seconds=0.5):
+        nav = Navigation()
+        nav.step(0.0)
+        nav.turn(-100.0, 0.0)
+        seen = []
+        for k in range(1, int(seconds * fps) + 1):
+            nav.step(k / fps)
+            seen.append(nav.yaw)
+        return nav, seen
+
+    nav, seen = run(60)
+    goal = nav.goal()["yaw"]
+    assert 0.0 < seen[0] < 0.3 * goal
+    assert all(b >= a for a, b in zip(seen, seen[1:]))
+    assert abs(seen[-1] - goal) < 0.01 * goal          # there in 0.5 s
+    other, _ = run(30)
+    assert abs(other.yaw - nav.yaw) < 1e-9
+    twice = Navigation()
+    twice.step(0.0)
+    twice.turn(-100.0, 0.0)
+    twice.step(1 / 60)
+    twice.step(1 / 60)
+    assert twice.yaw == seen[0]
+    nav.reset()                                  # the framed view: eased
+    nav.step(0.5 + 1 / 60)
+    assert 0.0 < nav.yaw < goal
+    for k in range(60):
+        nav.step(0.52 + k / 60)
+    assert abs(nav.yaw) < 1e-3 and not nav.moving
+
+
+def test_a_flick_keeps_turning_and_slows_down():
+    from sogno_cane.ui.landscape_view import Navigation
+    nav = Navigation()
+    nav.step(0.0)
+    t = 0.0
+    for _ in range(10):                          # a fast drag
+        t += 0.01
+        nav.turn(-20.0, 0.0, t)
+    nav.let_go(t + 0.01)
+    g0 = nav.goal()["yaw"]
+    nav.step(t + 0.11)
+    g1 = nav.goal()["yaw"]
+    nav.step(t + 0.21)
+    g2 = nav.goal()["yaw"]
+    assert g1 > g0 and 0.0 < g2 - g1 < g1 - g0
+    for k in range(100):
+        nav.step(t + 0.21 + 0.05 * (k + 1))
+    assert not nav.moving
+    slow = Navigation()                          # a slow release stops
+    slow.step(0.0)
+    for k in range(10):
+        slow.turn(-1.0, 0.0, 0.1 * (k + 1))
+    slow.let_go(1.05)
+    g = slow.goal()["yaw"]
+    slow.step(1.2)
+    assert slow.goal()["yaw"] == g
+    nav.turn(-20.0, 0.0, 9.0)                    # grabbed again: it stops
+    nav.turn(-20.0, 0.0, 9.01)
+    nav.let_go(9.02)
+    nav.hold()
+    g = nav.goal()["yaw"]
+    nav.step(9.5)
+    assert nav.goal()["yaw"] == g
+
+
+def test_the_wheel_comes_closer_to_the_point_under_the_pointer():
+    """Closer for real (the eye moves, the depth changes), toward what is
+    under the pointer, which stays there; dragging with the right button
+    moves the scene with the pointer."""
+    from sogno_cane.ui import landscape_view as lv
+    scene = _scene()
+    scene.shape = "mesh"
+    eye, look, fit, pivot = _framed(scene)
+    nav = lv.Navigation()
+    cam, scale, ox, oy = lv.navigated(nav, eye, look, pivot, fit)
+    frame = lv.NavFrame(cam, scale, ox, oy, pivot, nav.shift, 1.0)
+    x, y = 0.7 * 960, 0.62 * 540
+    hit = frame.ground_at(x, y)
+    assert hit is not None and abs(hit[1]) < 1e-9
+    nav.zoom(4, hit, pivot)
+    nav.settle()
+    assert nav.dolly < 0.6
+    sx, sy = _on_screen(nav, eye, look, fit, pivot, hit)
+    assert abs(sx - x) < 0.5 and abs(sy - y) < 0.5
+    near, _ = nav.rig(eye, look, pivot)
+    assert np.linalg.norm(near - hit) < 0.6 * np.linalg.norm(eye - hit)
+    nav.zoom(-100)                               # not past the limits
+    nav.zoom(100)
+    nav.settle()
+    assert nav.dolly == lv._DOLLY_RANGE[0]
+    # Moved with the right button: the middle follows the pointer.
+    nav = lv.Navigation()
+    cam, scale, ox, oy = lv.navigated(nav, eye, look, pivot, fit)
+    frame = lv.NavFrame(cam, scale, ox, oy, pivot, nav.shift, 1.0)
+    before = _on_screen(nav, eye, look, fit, pivot, pivot)
+    nav.slide(frame.slide(40.0, -25.0))
+    nav.settle()
+    after = _on_screen(nav, eye, look, fit, pivot, pivot)
+    assert abs(after[0] - before[0] - 40.0) < 0.5
+    assert abs(after[1] - before[1] + 25.0) < 0.5
+    # Beside the waves, toward the nearest of them (closer to empty ground
+    # would lose the scene); above the horizon, toward the middle.
+    side = lv.NavFrame(cam, scale, ox, oy, pivot, nav.shift, 1.0,
+                       (-6.0, 6.0, 0.0, 26.0))
+    far = side.ground_at(0.02 * 960, 0.98 * 540)
+    assert far is not None and -6.0 <= far[0] <= 6.0 and 0 <= far[2] <= 26
+    assert side.ground_at(480.0, -2000.0) is None
+
+
+def test_a_saved_point_of_view_comes_back_as_it_was():
+    from sogno_cane.ui.landscape_view import Navigation
+    nav = Navigation()
+    nav.turn(300.0, -50.0)
+    nav.zoom(3)
+    nav.slide(np.array([1.5, 0.0, -2.0]))
+    nav.settle()
     again = Navigation.from_dict(nav.to_dict())
     assert again.to_dict() == nav.to_dict()
-    odd = Navigation.from_dict({"zoom": "x", "yaw": float("nan"),
-                                "pan_x": 9})
-    assert (odd.zoom, odd.yaw, odd.pan_x) == (1.0, 0.0, 1.0)
+    assert again.yaw == nav.to_dict()["yaw"]     # shown as saved, at once
+    old = Navigation.from_dict({"yaw": 0.5, "zoom": 2.0, "pan_x": 0.3})
+    assert old.dolly == 0.5 and old.yaw == 0.5   # 0.9.10-0.9.12: a lens
+    odd = Navigation.from_dict({"dolly": "x", "yaw": float("nan"),
+                                "shift_x": 1e9})
+    assert (odd.dolly, odd.yaw) == (1.0, 0.0)
+    assert odd.goal()["shift_x"] == 30.0
 
 
 def test_rows_are_the_strands_and_the_threads_between_them():

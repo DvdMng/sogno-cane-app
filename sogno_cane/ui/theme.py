@@ -159,6 +159,12 @@ QPushButton#CallToAction {{
 }}
 QPushButton#CallToAction:hover {{ background-color: #FFEC9B; }}
 
+/* The transport row: a little tighter, to stay on one line on a 1536 px
+   wide screen (1920 at 125 %). */
+QWidget#TransportBar QPushButton {{
+    padding: 5px 9px;
+}}
+
 /* Segmented control: mutually exclusive source modes. */
 QPushButton#ModeButton {{
     color: {TEXT_DIM};

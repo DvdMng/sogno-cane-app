@@ -40,6 +40,17 @@ disattivate) e **binario** a 17 float dell'Unicorn UDP Interface (Hybrid
 Black). Le registrazioni **CSV** e **BDF+** del Recorder si riproducono con
 **FILE**. Guida completa: `portable/EEG_COLLEGAMENTO.txt`.
 
+## Novità della versione 0.9.7
+
+* **VISTA 3D a mesh**: con FORMA → MESH le onde dell'uomo e del cane
+  diventano un'unica superficie a trama fine; le onde restano le linee più
+  luminose.
+* **FORMA e DISPOSIZIONE** si scelgono sopra la vista 3D in STUDIO; la
+  forma anche dal pannello della PROIEZIONE.
+* La vista 3D si ridisegna 30 volte al secondo: più tempo al motore MIDI.
+* **Schermi più piccoli**: la riga TRASPORTO va a capo invece di tagliare
+  le scritte dei pulsanti, e la finestra si apre dentro lo schermo.
+
 ## Novità della versione 0.9.6
 
 * **Note accese fino al riavvio di Ableton**: PANIC ora le spegne davvero

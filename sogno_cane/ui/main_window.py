@@ -11,6 +11,7 @@ from PySide6.QtGui import QGuiApplication
 import os
 
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QFileDialog,
     QHBoxLayout,
     QInputDialog,
@@ -32,6 +33,7 @@ from sogno_cane.io.archive import Archive
 from sogno_cane.settings import Settings
 from sogno_cane.ui.archive_panel import ArchivePanel
 from sogno_cane.ui.device_panel import DevicePanel
+from sogno_cane.ui.landscape_view import FRAME_MS as LANDSCAPE_FRAME_MS
 from sogno_cane.ui.landscape_view import LandscapeView
 from sogno_cane.ui.mapping_panel import MappingPanel
 from sogno_cane.ui.midi_monitor import MidiMonitor
@@ -49,6 +51,11 @@ from sogno_cane.ui.theme import (
     ChromeTitle,
     app_icon,
 )
+from sogno_cane.ui.wrap_row import WrapRow
+
+# Room for the window frame and title bar (Windows), in logical pixels.
+_FRAME_W = 16
+_FRAME_H = 40
 
 
 class MainWindow(QMainWindow):
@@ -152,10 +159,33 @@ class MainWindow(QMainWindow):
         self._notify_pending_update()
         if updater.update_url() and updater.auto_update_enabled():
             self._start_update_check(manual=False)
+        self._fit_to_screen()
 
     # ------------------------------------------------------------------ #
     # Layout                                                             #
     # ------------------------------------------------------------------ #
+
+    def _fit_to_screen(self) -> None:
+        """A saved size larger than the screen (the 1600 px default on a
+        scaled screen, a size saved on a bigger monitor) is reduced to fit,
+        frame included, and the window centred: where the screen can hold
+        the window at all."""
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        if screen is None:
+            return
+        avail = screen.availableGeometry()
+        self.ensurePolished()               # sizes with the theme applied
+        least = self.minimumSizeHint()
+        w, h = self.width(), self.height()
+        if w + _FRAME_W > avail.width() >= least.width() + _FRAME_W:
+            w = avail.width() - _FRAME_W
+        if h + _FRAME_H > avail.height() >= least.height() + _FRAME_H:
+            h = avail.height() - _FRAME_H
+        if (w, h) == (self.width(), self.height()):
+            return
+        self.resize(w, h)
+        self.move(avail.x() + (avail.width() - w - _FRAME_W) // 2,
+                  avail.y() + (avail.height() - h - _FRAME_H) // 2)
 
     def _build_studio(self) -> QWidget:
         studio = QWidget()
@@ -164,7 +194,7 @@ class MainWindow(QMainWindow):
         v.setSpacing(8)
 
         # Global transport bar.
-        v.addLayout(self._build_transport())
+        v.addWidget(self._build_transport())
 
         # Device panels — these get the lion's share of the height.
         self._human = DevicePanel("UMANO", HUMAN_PROFILE, archive=self._archive)
@@ -198,12 +228,36 @@ class MainWindow(QMainWindow):
         self._landscape = LandscapeView(
             {"human": self._human.profile, "dog": self._dog.profile},
         )
-        self._landscape.hide()
+        self._landscape_box = QWidget()
+        box = QVBoxLayout(self._landscape_box)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(4)
+        opts = QHBoxLayout()
+        opts.setSpacing(6)
+        self._shape_btns = self._segmented(
+            opts, "FORMA", (("lines", "LINEE"), ("mesh", "MESH")),
+            "Linee: ogni onda per sé. Mesh: le onde unite in un'unica\n"
+            "superficie a trama fine, che nasconde ciò che sta dietro;\n"
+            "le onde restano le linee più luminose.",
+            lambda key: self._set_landscape("shape", key),
+        )
+        opts.addSpacing(18)
+        self._order_btns = self._segmented(
+            opts, "DISPOSIZIONE",
+            (("grouped", "AFFIANCATI"), ("interleaved", "INTRECCIATI")),
+            "Affiancati: le onde dell'uomo a sinistra, quelle del cane a\n"
+            "destra. Intrecciati: un canale dell'uomo e uno del cane, a turno.",
+            lambda key: self._set_landscape("order", key),
+        )
+        opts.addStretch(1)
+        box.addLayout(opts)
+        box.addWidget(self._landscape, 1)
+        self._landscape_box.hide()
 
         self._studio_split = QSplitter(Qt.Orientation.Vertical)
         self._studio_split.setHandleWidth(8)
         self._studio_split.addWidget(top)
-        self._studio_split.addWidget(self._landscape)
+        self._studio_split.addWidget(self._landscape_box)
         self._studio_split.addWidget(mon_wrap)
         self._studio_split.setStretchFactor(0, 5)
         self._studio_split.setStretchFactor(1, 6)
@@ -213,7 +267,7 @@ class MainWindow(QMainWindow):
 
         self._landscape_timer = QTimer(self)
         self._landscape_timer.setTimerType(Qt.TimerType.PreciseTimer)
-        self._landscape_timer.setInterval(16)
+        self._landscape_timer.setInterval(LANDSCAPE_FRAME_MS)
         self._landscape_timer.timeout.connect(self._landscape.advance)
 
         # Wire device events.
@@ -292,9 +346,15 @@ class MainWindow(QMainWindow):
         tabs.addTab(MappingPanel(self._human.bundle, "MAPPATURA UMANO"), "UMANO")
         tabs.addTab(MappingPanel(self._dog.bundle, "MAPPATURA CANE"), "CANE")
 
-    def _build_transport(self) -> QHBoxLayout:
-        bar = QHBoxLayout()
-        bar.setSpacing(10)
+    def _build_transport(self) -> QWidget:
+        """The transport row. On a window too narrow for all of it (a
+        maximized window on a small or scaled screen) what does not fit goes
+        to a second line: no button is ever narrower than its text. Gaps
+        and padding are a little tighter than elsewhere, so that the row
+        stays on one line on a 1536 px wide screen (1920 at 125 %)."""
+        self._transport = QWidget()
+        self._transport.setObjectName("TransportBar")
+        bar = WrapRow(self._transport, spacing=6, line_spacing=6)
         lbl = QLabel("TRASPORTO")
         lbl.setStyleSheet("font-weight: 700; letter-spacing: 3px;")
         bar.addWidget(lbl)
@@ -345,7 +405,13 @@ class MainWindow(QMainWindow):
         )
         self._projection_btn.clicked.connect(self._show_projection_controls)
         bar.addWidget(self._projection_btn)
-        bar.addStretch(1)
+        # Configuration, version, updates and help stay together, at the
+        # right end of the row (or of the second line).
+        tail = QWidget()
+        bar.addWidget(tail)
+        tail_row = QHBoxLayout(tail)
+        tail_row.setContentsMargins(0, 0, 0, 0)
+        tail_row.setSpacing(6)
         self._cfg_studio_lbl = QLabel("")
         self._cfg_studio_lbl.setToolTip(
             "Configurazione attuale (la mappatura di entrambi i dispositivi).\n"
@@ -353,28 +419,28 @@ class MainWindow(QMainWindow):
             "SALVA la sovrascrive; per salvarla con un altro nome o caricarne\n"
             "un'altra vai nella scheda MAPPATURA."
         )
-        bar.addWidget(self._cfg_studio_lbl)
+        tail_row.addWidget(self._cfg_studio_lbl)
         cfg_save = QPushButton("SALVA")
         cfg_save.setToolTip("Sovrascrive la configurazione attuale.")
         cfg_save.clicked.connect(self._save_config)
-        bar.addWidget(cfg_save)
-        bar.addSpacing(10)
+        tail_row.addWidget(cfg_save)
+        tail_row.addSpacing(8)
         self._version_lbl = QLabel(f"v{__version__}")
         self._version_lbl.setObjectName("VersionTag")
         self._version_lbl.setToolTip(
             "Versione installata. Premi AGGIORNAMENTI per cercarne una nuova."
         )
-        bar.addWidget(self._version_lbl)
+        tail_row.addWidget(self._version_lbl)
         self._update_btn = QPushButton("AGGIORNAMENTI")
         self._update_btn.setToolTip("Cerca online una versione più recente")
         self._update_btn.clicked.connect(lambda: self._start_update_check(True))
-        bar.addWidget(self._update_btn)
+        tail_row.addWidget(self._update_btn)
         help_btn = QPushButton("?")
         help_btn.setFixedWidth(36)
         help_btn.setToolTip("Aiuto rapido")
         help_btn.clicked.connect(self._show_help)
-        bar.addWidget(help_btn)
-        return bar
+        tail_row.addWidget(help_btn)
+        return self._transport
 
     # ------------------------------------------------------------------ #
     # Transport                                                          #
@@ -505,11 +571,14 @@ class MainWindow(QMainWindow):
             "    cane). Vale per la visualizzazione, non per il MIDI.\n"
             "  • VISTA 3D, in alto, mostra le onde dell'uomo e del cane\n"
             "    insieme, in prospettiva: il presente in primo piano, il\n"
-            "    passato che si allontana e svanisce.\n"
+            "    passato che si allontana e svanisce. FORMA: LINEE, ogni\n"
+            "    onda per sé, o MESH, le onde unite in un'unica superficie.\n"
+            "    DISPOSIZIONE: affiancati (uomo a sinistra, cane a destra)\n"
+            "    o intrecciati.\n"
             "  • PROIEZIONE porta le onde sul proiettore collegato in\n"
             "    modalità Estendi (Windows: Win+P, Estendi) mentre l'app\n"
             "    resta qui. Dal suo pannello: schermo, tutto schermo,\n"
-            "    vista 3D o tracce, disposizione, secondi, ampiezza.\n\n"
+            "    vista 3D o tracce, forma, disposizione, secondi, ampiezza.\n\n"
             "NOTE CHE RESTANO ACCESE\n"
             "  PANIC manda un note-off per ogni nota di ogni canale: spegne\n"
             "  anche le note rimaste appese in Ableton da una sessione\n"
@@ -848,6 +917,35 @@ class MainWindow(QMainWindow):
     # Combined 3D view and projection                                    #
     # ------------------------------------------------------------------ #
 
+    def _segmented(self, row, caption, options, tip, on_pick) -> dict:
+        """A caption and mutually exclusive buttons, like SORGENTE."""
+        lbl = QLabel(caption)
+        lbl.setStyleSheet(f"color: {TEXT_DIM}; letter-spacing: 2px;")
+        row.addWidget(lbl)
+        group = QButtonGroup(self)
+        group.setExclusive(True)
+        buttons = {}
+        for key, text in options:
+            btn = QPushButton(text)
+            btn.setObjectName("ModeButton")
+            btn.setCheckable(True)
+            btn.setToolTip(tip)
+            btn.clicked.connect(lambda _on, k=key: on_pick(k))
+            group.addButton(btn)
+            row.addWidget(btn)
+            buttons[key] = btn
+        buttons[options[0][0]].setChecked(True)
+        return buttons
+
+    def _set_landscape(self, attr: str, value: str) -> None:
+        """FORMA / DISPOSIZIONE of the 3D view in STUDIO."""
+        setattr(self._landscape, attr, value)
+        buttons = self._shape_btns if attr == "shape" else self._order_btns
+        if value in buttons and not buttons[value].isChecked():
+            buttons[value].setChecked(True)
+        self._landscape._fit_key = None
+        self._landscape.update()
+
     def _set_view_3d(self, on: bool) -> None:
         """The perspective view in place of the two trace views."""
         on = bool(on)
@@ -856,7 +954,7 @@ class MainWindow(QMainWindow):
             return
         self._human.set_waveform_visible(not on)
         self._dog.set_waveform_visible(not on)
-        self._landscape.setVisible(on)
+        self._landscape_box.setVisible(on)
         if on:
             sizes = self._studio_split.sizes()
             total = sum(sizes)
@@ -1001,6 +1099,12 @@ class MainWindow(QMainWindow):
             shown = self._settings.get(key, "visible_channels", default=None)
             if isinstance(shown, list) and shown:
                 dev.set_visible_channels(shown)
+        shape = self._settings.get("display", "shape_3d", default="lines")
+        if shape in self._shape_btns:
+            self._set_landscape("shape", shape)
+        order = self._settings.get("display", "order_3d", default="grouped")
+        if order in self._order_btns:
+            self._set_landscape("order", order)
         if self._settings.get("display", "view_3d", default=False):
             self._set_view_3d(True)
 
@@ -1015,6 +1119,8 @@ class MainWindow(QMainWindow):
                                dev.visible_channels())
         self._settings.set("display", "view_3d",
                            self._view3d_btn.isChecked())
+        self._settings.set("display", "shape_3d", self._landscape.shape)
+        self._settings.set("display", "order_3d", self._landscape.order)
         self._settings.set("projection", "settings",
                            self._projection_settings.to_dict())
         self._settings.save()

@@ -34,6 +34,7 @@ from sogno_cane.ui.waveform_widget import _DisplayCleaner, _Playout, _palette
 KINDS = ("human", "dog")
 LABELS = {"human": "UOMO", "dog": "CANE"}
 ORDERS = ("grouped", "interleaved")
+SHAPES = ("lines", "mesh")
 
 
 def _mix(a: QColor, b: QColor, t: float) -> QColor:
@@ -56,11 +57,28 @@ _HEIGHT = 1.05
 _DEPTH = 26.0
 _POINTS = 375                # points per strand at most
 _BANDS = 9                   # alpha steps from present to past
+# The mesh: the surface joining the strands.
+_SUBDIV = 6                  # rows per gap: the strand and 5 threads
+_THREAD_WEIGHT = 0.40        # the threads: thin, well under the strands
+_THREAD_STEP = 2             # threads at half the detail of the strands
+_MESH_STEP = 3               # strip length along time, in points (~50 ms)
+_MESH_RELIEF = 1.5           # seen from above the relief foreshortens: taller
+_MESH_SECTION = 3            # a cross-section every so many strips (~150 ms)
+_SURFACE_BANDS = 12          # steps in which the strands go on top
+_GRID = "#B9B0CC"            # the cross-sections: a neutral, light grey-lilac
+# Light smoothing along time for the surface (Gaussian, sigma ~20 ms at the
+# default 16 ms per point): alpha keeps its shape, the bristle goes.
+_SMOOTH_KERNEL = np.exp(-0.5 * (np.arange(-3, 4) / 1.25) ** 2)
+_SMOOTH_KERNEL /= _SMOOTH_KERNEL.sum()
 # The strands are drawn at reduced resolution and eased up, which softens
 # them: about 700 lines tall whatever the window (half resolution on a
 # projector, full in the app, where the view is low and halving it blurred
 # the strands into ribbons).
 _RENDER_LINES = 700
+_MESH_LINES = 560            # the surface is soft anyway, and costs more
+# Frames per second for this view: the scene moves slowly, and every frame
+# drawn is time taken from the MIDI engine (same interpreter).
+FRAME_MS = 33
 _DRIFT_PERIOD_S = 70.0       # slow drift of the point of view
 
 
@@ -133,6 +151,7 @@ class LandscapeView(QWidget):
         super().__init__(parent)
         self._streams = {k: _Stream(p, seconds) for k, p in profiles.items()}
         self.order = "grouped"
+        self.shape = "lines"         # or "mesh": neighbouring strands joined
         self.show_labels = True
         self.gain = 1.0
         self.drift = True
@@ -212,13 +231,16 @@ class LandscapeView(QWidget):
         return [r + (x - mid,) for r, x in zip(ordered, xs)]
 
     def _camera(self, half_width: float, phase: float):
-        """Low and to one side, looking along the strands into the past."""
+        """Low and to one side, looking along the strands into the past;
+        higher for the surface (a three-quarter view from above), where a
+        low eye made the peaks overlap and the grid unreadable."""
         sway = math.sin(phase)
         target = np.array([0.35 * half_width, 0.0, 0.42 * _DEPTH])
+        mesh = self.shape == "mesh"
         pos = np.array([
             -half_width - 3.2 + 1.4 * sway,
-            2.3 + 0.35 * math.sin(phase * 0.7 + 1.0),
-            -4.6,
+            (5.2 if mesh else 2.3) + 0.35 * math.sin(phase * 0.7 + 1.0),
+            -6.0 if mesh else -4.6,
         ])
         f = target - pos
         f /= np.linalg.norm(f)
@@ -236,19 +258,23 @@ class LandscapeView(QWidget):
 
     def _fit_to(self, half_width: float, w: int, h: int):
         """Pixels per unit and offsets so the scene fills the frame."""
-        key = (w, h, round(half_width, 3))
+        key = (w, h, round(half_width, 3), self.shape)
         if key == self._fit_key:
             return self._fit
         cam = self._camera(half_width, 0.0)
+        mesh = self.shape == "mesh"
+        tall = _HEIGHT * (_MESH_RELIEF if mesh else 1.0)
         corners = np.array([
             [x, y, z]
             for x in (-half_width, half_width)
-            for y in (-_HEIGHT, _HEIGHT)
-            for z in (0.0, _DEPTH * 0.7)
+            for y in (-tall, tall)
+            for z in (0.0, _DEPTH * (0.9 if mesh else 0.7))
         ])
         u, v = self._project(corners, cam)
         span_x, span_y = u.max() - u.min(), v.max() - v.min()
-        scale = min(1.0 * w / span_x, 0.96 * h / span_y)
+        # The surface stays inside the frame, with a margin all round.
+        fill_x, fill_y = (0.90, 0.86) if mesh else (1.0, 0.96)
+        scale = min(fill_x * w / span_x, fill_y * h / span_y)
         off_x = 0.52 * w - scale * (u.max() + u.min()) / 2
         off_y = 0.56 * h + scale * (v.max() + v.min()) / 2
         self._fit_key, self._fit = key, (scale, off_x, off_y)
@@ -259,7 +285,8 @@ class LandscapeView(QWidget):
     # ------------------------------------------------------------------ #
 
     def _render_scale(self) -> float:
-        return min(1.0, max(0.5, _RENDER_LINES / max(1, self.height())))
+        lines = _RENDER_LINES if self.shape != "mesh" else _MESH_LINES
+        return min(1.0, max(0.5, lines / max(1, self.height())))
 
     def _ensure_accum(self) -> QImage:
         k = self._render_scale()
@@ -301,28 +328,23 @@ class LandscapeView(QWidget):
         scale, off_x, off_y = self._fit_to(half, w, h)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         fronts: dict[str, list[tuple[float, float]]] = {}
+        drawn, world = [], []
         for kind, base, values, x in rows:
             k = values.shape[0]
             zs = np.linspace(0.0, _DEPTH, k)
-            pts = np.column_stack([
-                np.full(k, x), _HEIGHT * self.gain * values, zs,
-            ])
+            heights = _HEIGHT * self.gain * values * (
+                _MESH_RELIEF if self.shape == "mesh" else 1.0)
+            pts = np.column_stack([np.full(k, x), heights, zs])
             u, v = self._project(pts, cam)
             sx = off_x + scale * u
             sy = off_y - scale * v
             fronts.setdefault(kind, []).append((float(sx[0]), float(sy[0])))
-            # The past dissolves: band by band with depth the strand turns
-            # toward the shared haze and fades out.
-            edges = np.linspace(0, k - 1, _BANDS + 1).astype(int)
-            for b in range(_BANDS):
-                age = b / (_BANDS - 1)
-                c = _mix(base, _HAZE, min(1.0, 1.3 * age))
-                c.setAlphaF(0.95 * (1.0 - age) ** 1.7)
-                pen = QPen(c, 1.0)
-                pen.setCosmetic(True)
-                p.setPen(pen)
-                lo, hi = edges[b], edges[b + 1] + 1
-                p.drawPath(arrayToQPath(sx[lo:hi], sy[lo:hi]))
+            drawn.append((base, sx, sy))
+            world.append((base, x, heights))
+        if self.shape == "mesh" and len(world) > 1:
+            self._paint_surface(p, world, drawn, cam, scale, off_x, off_y)
+        else:
+            self._paint_lines(p, drawn)
         p.end()
         if self.order == "interleaved":
             return []
@@ -338,6 +360,162 @@ class LandscapeView(QWidget):
             labels.append((LABELS[kind], x / k, y / k))
         return labels
 
+    @staticmethod
+    def _pen(base: QColor, age: float, weight: float = 1.0) -> QPen:
+        """The past dissolves: with depth a strand turns toward the shared
+        haze and fades out."""
+        c = _mix(base, _HAZE, min(1.0, 1.3 * age))
+        c.setAlphaF(weight * 0.95 * (1.0 - age) ** 1.7)
+        pen = QPen(c, 1.0)
+        pen.setCosmetic(True)
+        return pen
+
+    def _paint_lines(self, p: QPainter, drawn: list) -> None:
+        for base, sx, sy in drawn:
+            edges = np.linspace(0, sx.shape[0] - 1, _BANDS + 1).astype(int)
+            for b in range(_BANDS):
+                p.setPen(self._pen(base, b / (_BANDS - 1)))
+                lo, hi = edges[b], edges[b + 1] + 1
+                p.drawPath(arrayToQPath(sx[lo:hi], sy[lo:hi]))
+
+    def _paint_surface(self, p: QPainter, world: list, drawn: list, cam,
+                       scale: float, off_x: float, off_y: float) -> None:
+        """All the strands woven into one surface: a single wave in three
+        dimensions, made of fine lines.
+
+        Between each pair of neighbouring strands run _SUBDIV - 1 threads,
+        interpolated smoothly across the channels (Catmull-Rom), each in a
+        colour part of the way from one strand to the next, so pink and
+        cyan mix in the lines themselves. The strands are the brightest
+        lines, heavier near the present; cross-sections at even intervals
+        of time keep the structure. The surface under the lines is solid,
+        the colour of the background, so the fabric hides what lies behind
+        it. No shading, no gradients, nothing blended over the last frame.
+        The signal is lightly smoothed along time here (the fabric should
+        flow, not bristle), the strands as well, so they lie on it. Painted
+        in strips from the past forward, each hiding what lies behind it.
+        """
+        n = min(h.shape[0] for _c, _x, h in world)
+
+        def fit(a: np.ndarray) -> np.ndarray:
+            if a.shape[0] == n:
+                return a
+            return np.interp(np.linspace(0, a.shape[0] - 1, n),
+                             np.arange(a.shape[0]), a)
+
+        k = len(world)
+        full = np.stack([fit(h) for _c, _x, h in world])        # (k, n)
+        pad = _SMOOTH_KERNEL.shape[0] // 2
+        padded = np.pad(full, ((0, 0), (pad, pad)), mode="edge")
+        full = np.stack([np.convolve(row, _SMOOTH_KERNEL, mode="valid")
+                         for row in padded])
+        xk = np.array([x for _c, x, _h in world], dtype=float)
+        ck = [c for c, _x, _h in world]
+        z_all = np.linspace(0.0, _DEPTH, n)
+
+        # Rows across, at full detail: the strands and the threads between.
+        t = np.arange((k - 1) * _SUBDIV + 1) / _SUBDIV
+        i0 = np.minimum(np.floor(t).astype(int), k - 2)
+        fr = t - i0
+        f = fr[:, None]
+        p0 = full[np.clip(i0 - 1, 0, k - 1)]
+        p1 = full[i0]
+        p2 = full[np.clip(i0 + 1, 0, k - 1)]
+        p3 = full[np.clip(i0 + 2, 0, k - 1)]
+        rows_h = 0.5 * (2 * p1 + (p2 - p0) * f
+                        + (2 * p0 - 5 * p1 + 4 * p2 - p3) * f ** 2
+                        + (3 * p1 - p0 - 3 * p2 + p3) * f ** 3)
+        rows_x = xk[i0] + (xk[i0 + 1] - xk[i0]) * fr
+        r_n = rows_h.shape[0]
+        pts = np.stack([
+            np.repeat(rows_x[:, None], n, axis=1), rows_h,
+            np.repeat(z_all[None, :], r_n, axis=0),
+        ], axis=-1).reshape(-1, 3)
+        u, v = self._project(pts, cam)
+        sx = (off_x + scale * u).reshape(r_n, n)
+        sy = (off_y - scale * v).reshape(r_n, n)
+
+        # Each thread in a colour part of the way from pink to cyan, as far
+        # as it is from its two strands: a few steps, so a whole band of
+        # threads of one colour is one stroke.
+        strand_rows = np.arange(k) * _SUBDIV
+        threads: dict[int, list[int]] = {}
+        for r in range(r_n):
+            if r % _SUBDIV == 0:
+                continue
+            start = ck[i0[r]]
+            toward_cyan = fr[r] if start.red() > start.blue() else 1 - fr[r]
+            step = int(round(toward_cyan * (_SUBDIV - 1)))
+            threads.setdefault(step, []).append(r)
+        thread_colors = {
+            q: _mix(QColor(ACCENT_PINK), QColor(ACCENT_CYAN),
+                    q / (_SUBDIV - 1))
+            for q in threads
+        }
+        strand_groups: dict[str, list[int]] = {}
+        for j in range(k):
+            strand_groups.setdefault(ck[j].name(), []).append(j)
+
+        cols = np.arange(0, n, _MESH_STEP)
+        if cols[-1] != n - 1:
+            cols = np.append(cols, n - 1)
+        c_n = cols.shape[0]
+        bands = np.linspace(0, c_n - 1, _SURFACE_BANDS + 1).astype(int)
+        hide = QColor(self._bg)
+
+        def stroke(rows, lo, hi, step=1):
+            idx = np.arange(lo, hi + 1, step)
+            if idx[-1] != hi:
+                idx = np.append(idx, hi)      # bands must meet
+            joins = np.ones(idx.shape[0], dtype=bool)
+            joins[-1] = False                 # no line from one to the next
+            path = arrayToQPath(sx[np.ix_(rows, idx)].ravel(),
+                                sy[np.ix_(rows, idx)].ravel(),
+                                connect=np.tile(joins, len(rows)))
+            p.drawPath(path)
+            return path
+
+        for b in range(_SURFACE_BANDS - 1, -1, -1):           # past first
+            for ci in range(bands[b + 1] - 1, bands[b] - 1, -1):
+                if ci >= c_n - 1:
+                    continue
+                c, c2 = cols[ci], cols[ci + 1]
+                ax, ay = sx[:, c], sy[:, c]
+                bx, by = sx[:, c2], sy[:, c2]
+                body = arrayToQPath(np.concatenate([ax, bx[::-1]]),
+                                    np.concatenate([ay, by[::-1]]))
+                body.closeSubpath()
+                p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+                p.fillPath(body, hide)
+                p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+                # The cross-section on the far edge of this strip, drawn once
+                # both strips beside it are filled (else it comes out dotted).
+                if (ci + 1) % _MESH_SECTION == 0:
+                    p.setPen(self._grid_pen(float(z_all[c2] / _DEPTH)))
+                    p.drawPath(arrayToQPath(bx, by))
+            lo, hi = cols[bands[b]], cols[bands[b + 1]]
+            age = float(z_all[lo] / _DEPTH)
+            for q, rows in threads.items():
+                p.setPen(self._pen(thread_colors[q], age, _THREAD_WEIGHT))
+                stroke(rows, lo, hi, _THREAD_STEP)
+            for _name, members in strand_groups.items():
+                p.setPen(self._pen(ck[members[0]], age))
+                path = stroke(list(strand_rows[members]), lo, hi)
+                if age < 0.5:                 # heavier near the present
+                    p.drawPath(path.translated(0.0, 0.6))
+        # The present: the front edge of the surface.
+        p.setPen(self._grid_pen(0.0, 1.6))
+        p.drawPath(arrayToQPath(sx[:, 0], sy[:, 0]))
+
+    @staticmethod
+    def _grid_pen(age: float, weight: float = 1.0) -> QPen:
+        """Cross-sections: neutral, thin, gone well before the strands."""
+        c = QColor(_GRID)
+        c.setAlphaF(min(1.0, weight * 0.52 * (1.0 - age) ** 2.2))
+        pen = QPen(c, 1.0)
+        pen.setCosmetic(True)
+        return pen
+
     def _draw_labels(self, p: QPainter, labels: list) -> None:
         font = QFont(self.font())
         font.setPointSizeF(8.0)
@@ -352,4 +530,4 @@ class LandscapeView(QWidget):
                        | Qt.AlignmentFlag.AlignTop, text)
 
 
-__all__ = ["LandscapeView", "KINDS", "ORDERS"]
+__all__ = ["LandscapeView", "KINDS", "ORDERS", "SHAPES"]

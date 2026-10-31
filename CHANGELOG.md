@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.9.7 — vista 3D a mesh, pulsanti interi su ogni schermo
+
+- **FORMA MESH.** In alternativa alle linee, la vista 3D unisce le onde
+  dell'uomo e del cane in un'unica superficie. Fra un canale e l'altro
+  scorrono fili sottili il cui colore passa per gradi dal rosa al ciano; le
+  onde vere restano le linee più luminose, e sezioni trasversali a
+  intervalli regolari di tempo ne tengono la forma. La superficie è opaca e
+  nasconde ciò che sta dietro, senza ombreggiature. Il punto di vista è più
+  alto, di tre quarti, perché i picchi non si coprano a vicenda. Per la
+  superficie le onde sono appena ammorbidite nel tempo (circa 20 ms): il
+  MIDI non ne è toccato.
+- **FORMA e DISPOSIZIONE in STUDIO.** Sopra la vista 3D si sceglie la forma
+  (LINEE, MESH) e la disposizione (AFFIANCATI: uomo a sinistra, cane a
+  destra; INTRECCIATI: un canale dell'uomo e uno del cane, a turno); la
+  scelta resta alla riapertura. Nel pannello della PROIEZIONE la forma ha
+  una voce propria.
+- **Più tempo al motore MIDI.** La vista 3D, in STUDIO e in proiezione, si
+  ridisegna 30 volte al secondo invece di 60: si muove lentamente, e il
+  tempo risparmiato resta al motore che genera il MIDI, che lavora nello
+  stesso processo. Le tracce restano a 60.
+- **Pulsanti tagliati sugli schermi più piccoli.** Quando la finestra era
+  più stretta della riga TRASPORTO (ingrandita su uno schermo piccolo o con
+  il ridimensionamento di Windows al 125–150%, oppure affiancata a un'altra
+  finestra) Qt restringeva il pulsante più largo, e «● REGISTRA UOMO+CANE»
+  perdeva le lettere ai lati. Ora configurazione, versione, AGGIORNAMENTI e
+  ? passano su una seconda riga, sempre a destra, e nessun pulsante è più
+  stretto della sua scritta. La finestra si stringe fino a circa 1120 px
+  (prima 1530) e, se la dimensione salvata non entra nello schermo, si apre
+  ridotta e centrata.
+
+Test: +4, **312 totali**.
+
 ## 0.9.6 — note che restano accese, uscita dei CC, vista 3D e proiezione
 Richieste dal campo.
 

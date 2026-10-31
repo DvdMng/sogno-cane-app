@@ -5,8 +5,9 @@ extended desktop (Windows: Win+P, Extend), while the app keeps working on
 the PC's screen: it opens without taking the focus. Everything about it is
 set from a control panel that stays open in the app and applies each
 change at once, also while projecting: screen, full screen or window,
-content (the combined perspective view or the trace views), layout,
-seconds shown, amplitude, labels and the drift of the point of view.
+content (the combined perspective view, as lines or as one surface, or
+the trace views), layout, seconds shown, amplitude, labels and the drift of
+the point of view.
 With a single screen it opens as an ordinary window.
 """
 from __future__ import annotations
@@ -33,6 +34,7 @@ from PySide6.QtWidgets import (
 
 from sogno_cane.eeg.profiles import DeviceProfile
 from sogno_cane.eeg.unicorn_packet import UnicornPacket
+from sogno_cane.ui.landscape_view import FRAME_MS as LANDSCAPE_FRAME_MS
 from sogno_cane.ui.landscape_view import LandscapeView
 from sogno_cane.ui.theme import PANEL_FILL, TEXT, TEXT_DIM
 from sogno_cane.ui.waveform_widget import WaveformWidget
@@ -42,6 +44,7 @@ _FRAME_MS_SLOW = 33
 _BLACK = "#000000"
 
 CONTENTS = {"3d": "Vista 3D", "traces": "Tracce"}
+SHAPES = {"lines": "Linee", "mesh": "Mesh (onde unite)"}
 LAYOUTS = {
     "3d": {"grouped": "Uomo e cane affiancati",
            "interleaved": "Uomo e cane intrecciati"},
@@ -59,6 +62,7 @@ class ProjectionSettings:
     fullscreen: bool = True
     content: str = "3d"
     layout: str = "grouped"
+    shape: str = "lines"
     seconds: float = 6.0
     gain: float = 1.0
     labels: bool = True
@@ -83,6 +87,8 @@ class ProjectionSettings:
             out.content = "3d"
         if out.layout not in LAYOUTS[out.content]:
             out.layout = next(iter(LAYOUTS[out.content]))
+        if out.shape not in SHAPES:
+            out.shape = "lines"
         return out
 
 
@@ -155,6 +161,15 @@ class ProjectionControls(QDialog):
         form.addRow("contenuto", self._content_cb)
         self._layout_cb = QComboBox()
         form.addRow("disposizione", self._layout_cb)
+        self._shape_cb = QComboBox()
+        for key, text in SHAPES.items():
+            self._shape_cb.addItem(text, key)
+        self._shape_cb.setToolTip(
+            "Linee: ogni onda per sé. Mesh: le onde unite in un'unica\n"
+            "superficie a trama fine; le onde restano le linee più\n"
+            "luminose. Solo per la vista 3D."
+        )
+        form.addRow("forma", self._shape_cb)
 
         self._seconds_sb = QDoubleSpinBox()
         self._seconds_sb.setRange(2.0, 20.0)
@@ -196,6 +211,7 @@ class ProjectionControls(QDialog):
         self._content_cb.setCurrentIndex(list(CONTENTS).index(
             settings.content))
         self._fill_layouts()
+        self._shape_cb.setCurrentIndex(list(SHAPES).index(settings.shape))
         self._seconds_sb.setValue(settings.seconds)
         self._gain_sb.setValue(settings.gain)
         self._labels_cb.setChecked(settings.labels)
@@ -208,6 +224,7 @@ class ProjectionControls(QDialog):
         for w in (self._full_cb, self._labels_cb, self._drift_cb):
             w.toggled.connect(self._changed)
         self._layout_cb.currentIndexChanged.connect(self._changed)
+        self._shape_cb.currentIndexChanged.connect(self._changed)
         self._seconds_sb.valueChanged.connect(self._changed)
         self._gain_sb.valueChanged.connect(self._changed)
         self._update_note()
@@ -248,7 +265,9 @@ class ProjectionControls(QDialog):
         self._changed()
 
     def _sync_enabled(self) -> None:
-        self._drift_cb.setEnabled(self._content_cb.currentData() == "3d")
+        is_3d = self._content_cb.currentData() == "3d"
+        self._drift_cb.setEnabled(is_3d)
+        self._shape_cb.setEnabled(is_3d)
 
     def _changed(self, *_args) -> None:
         if self._loading:
@@ -282,6 +301,7 @@ class ProjectionControls(QDialog):
             fullscreen=self._full_cb.isChecked(),
             content=self._content_cb.currentData(),
             layout=self._layout_cb.currentData(),
+            shape=self._shape_cb.currentData(),
             seconds=float(self._seconds_sb.value()),
             gain=float(self._gain_sb.value()),
             labels=self._labels_cb.isChecked(),
@@ -324,7 +344,9 @@ class ProjectionWindow(QWidget):
 
         self._timer = QTimer(self)
         self._timer.setTimerType(Qt.TimerType.PreciseTimer)
-        self._timer.setInterval(_FRAME_MS)
+        self._timer.setInterval(
+            LANDSCAPE_FRAME_MS if self._view is not None else _FRAME_MS
+        )
         self._timer.timeout.connect(self._on_frame)
         self._frame_prev: float | None = None
         self._frame_gaps: list[float] = []
@@ -364,6 +386,7 @@ class ProjectionWindow(QWidget):
             self._view = view
             self._apply_live(s)
             self._box.addWidget(view)
+            self._set_frame_ms(LANDSCAPE_FRAME_MS)
             return
         kinds = {"human": ["human"], "dog": ["dog"]}.get(
             s.layout, ["human", "dog"])
@@ -396,11 +419,19 @@ class ProjectionWindow(QWidget):
             row.addWidget(col, 1)
         self._box.addLayout(row)
         self._apply_live(s)
+        self._set_frame_ms(_FRAME_MS)
+
+    def _set_frame_ms(self, ms: int) -> None:
+        timer = getattr(self, "_timer", None)
+        if timer is not None:
+            timer.setInterval(ms)
+            self._frame_gaps = []
 
     def _apply_live(self, s: ProjectionSettings) -> None:
         """What changes without rebuilding the picture."""
         if self._view is not None:
             self._view.order = s.layout
+            self._view.shape = s.shape
             self._view.show_labels = s.labels
             self._view.gain = s.gain
             self._view.drift = s.drift

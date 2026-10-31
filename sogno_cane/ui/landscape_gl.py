@@ -11,9 +11,8 @@ afford inside the app's time budget:
 * steady motion: the time axis moves by the fraction of a sample elapsed,
   sixty times a second, and each sample keeps its place on the surface as
   it recedes (nothing is re-averaged from one frame to the next);
-* a volume: the surface is the top of a slab whose front and sides drop to
-  a base, and hidden lines are removed exactly by the depth buffer,
-  however dense the lines;
+* hidden lines removed exactly by the depth buffer, however dense the
+  lines;
 * almost no work for the processor: each frame only the newest samples
   are processed and uploaded, the card draws the rest, and the MIDI
   engine, in the same interpreter, keeps its time.
@@ -66,7 +65,6 @@ _GL_UNSIGNED_INT = 0x1405
 _GL_LINES = 0x0001
 _GL_LINE_STRIP = 0x0003
 _GL_TRIANGLES = 0x0004
-_GL_TRIANGLE_STRIP = 0x0005
 _GL_DEPTH_TEST = 0x0B71
 _GL_BLEND = 0x0BE2
 _GL_POLYGON_OFFSET_FILL = 0x8037
@@ -86,7 +84,6 @@ _SAMPLES = 4                 # antialiasing: samples per pixel
 _MAX_COLUMNS = 1500          # columns along time at most (6 s at 250 Hz)
 _SECTION_S = 0.144           # a cross-section every so long (as before)
 _FLOATS = 7                  # x, height, slot, weight, r, g, b
-_BASE_DEPTH = 0.6            # the slab's base, under the surface
 # Smoothing in time (Gaussian sigma): the strands keep what an EEG has up
 # to about 20 Hz, so its dense moments come through; the threads between
 # them a little less, so the fabric stays calm. Close enough that the
@@ -100,7 +97,7 @@ _SINK = 0.06
 _SCALE_TIME_S = 6.0          # the amplitude scale follows slowly: a dense
                              # burst keeps its size instead of being evened
 _SCALE_EVERY_S = 0.5
-_FIT_MARGIN = (0.90, 0.84)   # share of the frame the scene fills
+_FIT_MARGIN = (0.90, 0.86)   # share of the frame the scene fills
 
 _VERTEX = """
 attribute vec4 a_xhsw;
@@ -111,7 +108,6 @@ uniform float u_span;
 uniform float u_frac;
 uniform float u_depth;
 uniform float u_amp;
-uniform float u_base;
 uniform float u_sink;
 uniform float u_mode;
 uniform float u_alpha;
@@ -122,8 +118,8 @@ uniform vec3 u_grid;
 varying vec4 v_col;
 void main() {
     float age = clamp((u_newest - a_xhsw.z + u_frac) / u_span, 0.0, 1.0);
-    float y = a_xhsw.w < 0.0 ? u_base : max(a_xhsw.y * u_amp, u_base);
-    if (u_mode < 0.5 && a_xhsw.w >= 0.0) {
+    float y = a_xhsw.y * u_amp;
+    if (u_mode < 0.5) {
         y -= u_sink;
     }
     gl_Position = u_mvp * vec4(a_xhsw.x, y, age * u_depth, 1.0);
@@ -132,7 +128,7 @@ void main() {
         v_col = vec4(u_bg, 1.0);
     } else if (u_mode < 1.5) {
         vec3 c = mix(a_rgb, u_haze, min(1.0, 1.3 * age));
-        v_col = vec4(c, u_alpha * abs(a_xhsw.w) * fade);
+        v_col = vec4(c, u_alpha * a_xhsw.w * fade);
     } else {
         v_col = vec4(u_grid, u_alpha * fade);
     }
@@ -407,10 +403,10 @@ class _Scene:
         return [s + (x - mid,) for s, x in zip(ordered, xs)]
 
     def _rows(self, strands: list):
-        """Rows across: the base under the first strand, the strands with
-        the threads between them, the base under the last one. The heights
-        of every row are a fixed linear mix of the strands (Catmull-Rom),
-        so ``mix`` turns strand values into row values in one product."""
+        """Rows across: the strands with the threads between them. The
+        heights of every row are a fixed linear mix of the strands
+        (Catmull-Rom), so ``mix`` turns strand values into row values in
+        one product."""
         k = len(strands)
         sub = lv._SUBDIV if k >= 2 else 1
         t = np.arange((k - 1) * sub + 1) / sub
@@ -443,12 +439,7 @@ class _Scene:
             ])
             row_w = np.where(np.isclose(f, 0.0) | np.isclose(f, 1.0), 1.0,
                              lv._THREAD_WEIGHT)
-        # The bases of the two side walls.
-        row_x = np.concatenate([[row_x[0]], row_x, [row_x[-1]]])
-        row_rgb = np.concatenate([row_rgb[:1], row_rgb, row_rgb[-1:]])
-        row_w = np.concatenate([[-1.0], row_w, [-1.0]])
-        mix = np.vstack([np.zeros((1, k)), mix, np.zeros((1, k))])
-        strand_rows = 1 + np.arange(k) * sub
+        strand_rows = np.arange(k) * sub
         is_strand = np.zeros(row_x.shape[0], dtype=bool)
         is_strand[strand_rows] = True
         mix_s = mix * is_strand[:, None]
@@ -467,8 +458,7 @@ class _Scene:
         """As the QPainter view: to one side, looking along the strands
         into the past; higher for the surface (a three-quarter view)."""
         sway = math.sin(phase)
-        target = np.array([0.35 * half, -0.25 * self._amp(),
-                           0.42 * lv._DEPTH])
+        target = np.array([0.35 * half, 0.0, 0.42 * lv._DEPTH])
         mesh = self.shape == "mesh"
         pos = np.array([
             -half - 3.2 + 1.4 * sway,
@@ -495,18 +485,17 @@ class _Scene:
             return self._fit
         cam = self._camera(half, 0.0)
         amp = self._amp()
-        low = -_BASE_DEPTH * amp if self.shape == "mesh" else -amp
         corners = np.array([
             [x, y, z]
             for x in (-half, half)
-            for y in (low, amp)
+            for y in (-amp, amp)
             for z in (0.0, lv._DEPTH * 0.9)
         ])
         u, v = self._project(corners, cam)
         span_x, span_y = u.max() - u.min(), v.max() - v.min()
         scale = min(_FIT_MARGIN[0] * w / span_x, _FIT_MARGIN[1] * h / span_y)
         off_x = 0.52 * w - scale * (u.max() + u.min()) / 2
-        off_y = 0.54 * h + scale * (v.max() + v.min()) / 2
+        off_y = 0.56 * h + scale * (v.max() + v.min()) / 2
         self._fit_key, self._fit = key, (scale, off_x, off_y)
         return self._fit
 
@@ -540,17 +529,16 @@ class _Scene:
         if program is None:
             self._gl = None
             return False
-        self._gl = {"program": program, "vbo": None, "front": None,
-                    "ibo": {}, "rows": 0}
+        self._gl = {"program": program, "vbo": None, "ibo": {},
+                    "rows": 0}
         self._layout_key = None
         return True
 
     def release_gl(self) -> None:
         if not self._gl:
             return
-        for buf in (self._gl["vbo"], self._gl["front"]):
-            if buf is not None:
-                buf.destroy()
+        if self._gl["vbo"] is not None:
+            self._gl["vbo"].destroy()
         self._gl = None
 
     def _buffer(self, kind, data: np.ndarray, dynamic: bool = False):
@@ -617,9 +605,8 @@ class _Scene:
     def _rebuild(self, strands: list) -> None:
         """New rows (channels, order, profile): every column again."""
         gl = self._gl
-        for buf in (gl["vbo"], gl["front"]):
-            if buf is not None:
-                buf.destroy()
+        if gl["vbo"] is not None:
+            gl["vbo"].destroy()
         self.make_layout(strands)
         rows, strand_rows = self._lay["rows"], self._lay["strand_rows"]
         n = self.n
@@ -633,10 +620,6 @@ class _Scene:
         slots = np.arange(2 * n, dtype=np.float32)
         gl["vbo"] = self._buffer(QOpenGLBuffer.Type.VertexBuffer,
                                  self._vertices(slots, heights), True)
-        front = 2 * rows + 2 * len(strand_rows) + 2
-        gl["front"] = self._buffer(QOpenGLBuffer.Type.VertexBuffer,
-                                   np.zeros((front, _FLOATS), np.float32),
-                                   True)
         # Indices over the doubled ring, column by column, so the window of
         # the newest columns is always one contiguous slice. They stay in
         # memory and go with each draw: PySide6 cannot hand glDrawElements
@@ -647,12 +630,11 @@ class _Scene:
         quads = np.stack([a, a + 1, a + rows, a + 1, a + rows + 1, a + rows],
                          axis=2)
         gl["ibo"] = {"fill": np.ascontiguousarray(quads.reshape(-1))}
-        thread_rows = np.array([i for i in range(1, rows - 1)
+        thread_rows = np.array([i for i in range(rows)
                                 if i not in set(strand_rows.tolist())],
                                dtype=np.uint32)
         for name, sel in (("strands", strand_rows.astype(np.uint32)),
-                          ("threads", thread_rows),
-                          ("base", np.array([0, rows - 1], np.uint32))):
+                          ("threads", thread_rows)):
             if sel.size == 0:
                 continue
             seg = np.stack([c * rows + sel[None, :],
@@ -660,7 +642,7 @@ class _Scene:
             gl["ibo"][name] = np.ascontiguousarray(seg.reshape(-1))
         gl["counts"] = {"fill": 6 * (rows - 1),
                         "strands": 2 * strand_rows.size,
-                        "threads": 2 * thread_rows.size, "base": 4}
+                        "threads": 2 * thread_rows.size}
         gl["rows"] = rows
         self.pending = set()
 
@@ -717,7 +699,6 @@ class _Scene:
         scale, off_x, off_y = self._fit_to(half, w, h)
         mesh = self.shape == "mesh" and len(strands) >= 2
         amp = self._amp()
-        base = -_BASE_DEPTH * amp if mesh else -1.0e6
         made = min(self.count, n)
         head = self.count % n          # first slot of the window
         newest = head + n - 1
@@ -731,7 +712,6 @@ class _Scene:
         p.setUniformValue1f("u_frac", float(self.frac))
         p.setUniformValue1f("u_depth", float(lv._DEPTH))
         p.setUniformValue1f("u_amp", float(amp))
-        p.setUniformValue1f("u_base", float(base))
         p.setUniformValue1f("u_sink", float(_SINK * amp))
         haze, grid = lv._HAZE, QColor(lv._GRID)
         p.setUniformValue("u_haze", haze.redF(), haze.greenF(), haze.blueF())
@@ -768,9 +748,9 @@ class _Scene:
         f.glBlendFunc(_GL_SRC_ALPHA, _GL_ONE_MINUS_SRC_ALPHA)
         near = max(first, newest - n // 2)
         if mesh:
-            # The solid: surface and side walls, then the front wall, in
-            # the background colour, pushed back a little so the lines on
-            # them pass the depth test and the lines behind them do not.
+            # The surface, opaque in the background colour and a little
+            # under its own lines: they pass the depth test, the lines
+            # behind it do not.
             f.glEnable(_GL_DEPTH_TEST)
             f.glDepthFunc(_GL_LESS)
             f.glDepthMask(_GL_TRUE)
@@ -778,20 +758,14 @@ class _Scene:
             f.glPolygonOffset(1.0, 1.0)
             look(0.0, 1.0, 1.0)
             indexed(_GL_TRIANGLES, "fill", first, newest)
-            front = self._front(newest)
-            gl["front"].bind()
-            gl["front"].write(0, front.tobytes(), front.nbytes)
-            attrs(gl["front"])
-            f.glDrawArrays(_GL_TRIANGLE_STRIP, 0, 2 * rows)
             f.glDisable(_GL_POLYGON_OFFSET_FILL)
             f.glDepthFunc(_GL_LEQUAL)
             f.glDepthMask(_GL_FALSE)
-            attrs(gl["vbo"])
             # The fabric between the strands.
             look(1.0, 0.95, 1.7)
             f.glLineWidth(1.0)
             along("threads", first, newest)
-            # Cross-sections: across the surface and down both walls.
+            # Cross-sections at even intervals of time.
             look(2.0, 0.52, 2.2)
             every = max(1, round(_SECTION_S / self.col_s))
             j0 = self.count - made
@@ -799,17 +773,7 @@ class _Scene:
             for j in range(first_section, self.count - 1, every):
                 slot = head + (j - (self.count - n))
                 f.glDrawArrays(_GL_LINE_STRIP, slot * rows, rows)
-            # The base of the side walls.
-            look(2.0, 0.40, 2.2)
-            along("base", first, newest)
-            # The front wall: a drop under each strand and its base.
-            attrs(gl["front"])
-            k = len(self._lay["strand_rows"])
-            look(2.0, 0.30, 1.0)
-            f.glDrawArrays(_GL_LINES, 2 * rows, 2 * k)
-            look(2.0, 0.45, 1.0)
-            f.glDrawArrays(_GL_LINES, 2 * rows + 2 * k, 2)
-            attrs(gl["vbo"])
+            # The front edge: the present.
             look(2.0, 0.83, 1.0)
             f.glLineWidth(1.4)
             f.glDrawArrays(_GL_LINE_STRIP, newest * rows, rows)
@@ -832,29 +796,9 @@ class _Scene:
         QOpenGLBuffer.release(QOpenGLBuffer.Type.VertexBuffer)
         QOpenGLBuffer.release(QOpenGLBuffer.Type.IndexBuffer)
         self.labels = self._label_spots(strands, cam, scale, off_x, off_y,
-                                        amp, base if mesh else None, h)
+                                        amp, h)
 
-    def _front(self, newest: int) -> np.ndarray:
-        """The front wall: each row's newest point and the base under it,
-        alternating (a triangle strip), then a drop under each strand and
-        the base line, as segments."""
-        rows = self._lay["rows"]
-        heights = self._heights(np.array([self.count - 1]))[0]
-        top = self._vertices(np.array([float(newest)], np.float32),
-                             heights[None, :].astype(np.float32))[0]
-        bottom = top.copy()
-        bottom[:, 3] = -1.0
-        strip = np.empty((2 * rows, _FLOATS), dtype=np.float32)
-        strip[0::2] = top
-        strip[1::2] = bottom
-        s = self._lay["strand_rows"]
-        drops = np.empty((2 * len(s), _FLOATS), dtype=np.float32)
-        drops[0::2] = top[s]
-        drops[1::2] = bottom[s]
-        base = bottom[[0, rows - 1]]
-        return np.concatenate([strip, drops, base])
-
-    def _label_spots(self, strands, cam, scale, off_x, off_y, amp, base,
+    def _label_spots(self, strands, cam, scale, off_x, off_y, amp,
                      h) -> list:
         """UOMO / CANE under the present of each group (pixels)."""
         if self.order == "interleaved":
@@ -865,17 +809,13 @@ class _Scene:
             mine = [s for s in strands if s[0] == kind]
             if not mine:
                 continue
-            if base is not None:          # on the wall, near its foot
-                pts = [[x, 0.72 * base, 0.0] for _k, _ch, _c, x in mine]
-            else:
-                pts = [[x, float(self.values[k][pos, ch]) * amp, 0.0]
-                       for k, ch, _c, x in mine]
+            pts = [[x, float(self.values[k][pos, ch]) * amp, 0.0]
+                   for k, ch, _c, x in mine]
             u, v = self._project(np.array(pts), cam)
             sx = off_x + scale * u
             sy = off_y - scale * v
-            y = float(sy.mean()) - 0.011 * h if base is not None \
-                else float(sy.max()) + 0.03 * h
-            out.append((lv.LABELS[kind], float(sx.mean()), y))
+            out.append((lv.LABELS[kind], float(sx.mean()),
+                        float(sy.max()) + 0.03 * h))
         return out
 
 

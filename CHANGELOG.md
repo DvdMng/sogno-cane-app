@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.9 — vista 3D senza il blocco
+
+- **Niente più volume sotto la superficie.** La forma MESH torna come nella
+  0.9.7: un tessuto libero, con il suo bordo frontale luminoso e UOMO e
+  CANE sotto, senza la parete frontale, i fianchi e la base aggiunti nella
+  0.9.8. Restano i miglioramenti della 0.9.8: tutti i campioni (i momenti
+  densi dell'EEG si vedono), linee nascoste esatte, scorrimento continuo a
+  60 fotogrammi al secondo con circa 1 ms di processore per fotogramma.
+
+Test: **317 totali**.
+
 ## 0.9.8 — vista 3D sulla scheda grafica, morbidezza dei CC come tempo
 
 - **Vista 3D sulla scheda grafica.** In STUDIO e in proiezione la vista 3D

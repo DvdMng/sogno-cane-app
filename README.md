@@ -40,12 +40,17 @@ disattivate) e **binario** a 17 float dell'Unicorn UDP Interface (Hybrid
 Black). Le registrazioni **CSV** e **BDF+** del Recorder si riproducono con
 **FILE**. Guida completa: `portable/EEG_COLLEGAMENTO.txt`.
 
+## Novità della versione 0.9.9
+
+* **Vista 3D senza il blocco**: la forma MESH torna un tessuto libero con
+  il suo bordo frontale, come nella 0.9.7, con la fluidità e il dettaglio
+  della 0.9.8.
+
 ## Novità della versione 0.9.8
 
 * **Vista 3D sulla scheda grafica**: tutti i campioni, così i momenti
   densi di un EEG si vedono; scorrimento continuo a 60 fotogrammi al
-  secondo; con MESH la superficie diventa un volume con fronte e fianco. Il
-  processore quasi non se ne accorge.
+  secondo. Il processore quasi non se ne accorge.
 * **Morbidezza dei CC** regolata come tempo, da «nessuna» a 30 s, con un
   cursore; **uscita** come barra da trascinare.
 

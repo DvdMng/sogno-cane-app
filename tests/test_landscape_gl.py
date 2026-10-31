@@ -106,18 +106,23 @@ def test_the_dense_moments_of_an_eeg_come_through():
     assert at_20hz(thread) < at_20hz(strand)
 
 
-def test_rows_pass_through_the_strands_and_the_walls_are_marked():
+def test_rows_are_the_strands_and_the_threads_between_them():
+    """One surface, nothing under it: no walls, no base (the block of 0.9.8
+    was not wanted)."""
+    from sogno_cane.ui.landscape_view import _SUBDIV, _THREAD_WEIGHT
     scene = _scene()
     scene.make_layout(scene.strands())
     lay = scene._lay
-    assert lay["w"][0] == -1.0 and lay["w"][-1] == -1.0     # wall bases
     rows = lay["strand_rows"]
-    assert len(rows) == 16 and set(lay["w"][rows]) == {1.0}
+    assert lay["rows"] == 15 * _SUBDIV + 1
+    assert list(rows) == [i * _SUBDIV for i in range(16)]
+    assert set(lay["w"][rows]) == {1.0}
+    threads = [i for i in range(lay["rows"]) if i not in set(rows)]
+    assert np.allclose(lay["w"][threads], _THREAD_WEIGHT)
     mix = lay["mix_s"] + lay["mix_t"]
     for j, r in enumerate(rows):
         assert mix[r, j] == 1.0 and mix[r].sum() == 1.0     # on the strand
-    threads = [i for i in range(1, lay["rows"] - 1) if i not in set(rows)]
-    assert threads and np.allclose(mix[threads].sum(axis=1), 1.0)
+    assert np.allclose(mix[threads].sum(axis=1), 1.0)
 
 
 def test_without_opengl_the_app_keeps_the_qpainter_view():

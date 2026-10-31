@@ -125,6 +125,11 @@ class _Playout:
         lump = max((k for _t, k in self._arrivals), default=0)
         return max(4.0, 0.7 * lump + 0.03 * rate)
 
+    def phase(self) -> float:
+        """How much of the next sample is already due (0..1): lets a view
+        move by fractions of a sample between reveals."""
+        return min(0.999, max(0.0, self._acc))
+
     def take(self, now: float) -> np.ndarray | None:
         """The rows to reveal on this frame (``None``: nothing new)."""
         if self._last_t is None:

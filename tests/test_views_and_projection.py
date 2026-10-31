@@ -130,41 +130,98 @@ def test_ranges_and_smoothing_survive_a_saved_configuration():
     assert b2.coherence.out_max == 64
 
 
-def test_smoothing_shows_its_response_time():
-    from sogno_cane.ui.mapping_panel import _response_time_text
-    assert _response_time_text(0.0) == "risposta immediata"
-    assert _response_time_text(0.93) == "risposta in circa 1,4 s"
-    assert _response_time_text(0.95) == "risposta in circa 1,9 s"
-    assert _response_time_text(0.99) == "risposta in circa 9,9 s"
+def test_morbidezza_is_set_as_a_time(app):
+    """The morbidezza reads and sets the time the CC takes to follow the
+    signal, not the coefficient behind it; the voice keeps its coefficient,
+    so a configuration saved with 0,93 opens at 1,4 s."""
+    import math
+    from sogno_cane.ui.cc_controls import SmoothingControl, tau_from_smoothing
+    voice = rich_vocabulary_preset().per_channel_cc.voices[0]
+    voice.smoothing = 0.93
+    ctl = SmoothingControl(voice, setattr, 0.5)
+    assert ctl.field.text() == "1,4 s"
+    assert voice.smoothing == 0.93                 # opening changes nothing
+    ctl.field.setValue(2.0)
+    assert math.isclose(voice.smoothing, math.exp(-0.1 / 2.0))
+    assert math.isclose(ctl.seconds(), 2.0)
+    ctl.slider.setValue(ctl.slider.maximum())
+    assert ctl.field.text() == "30 s"
+    assert math.isclose(tau_from_smoothing(voice.smoothing), 30.0)
+    ctl.slider.setValue(0)
+    assert voice.smoothing == 0.0 and ctl.field.text() == "nessuna"
+    # As fine at the fast end as at the slow one: one step of the slider
+    # moves the time by well under 1 %.
+    for pos in (10, 500, 990):
+        ctl.slider.setValue(pos)
+        a = ctl.seconds()
+        ctl.slider.setValue(pos + 1)
+        assert 1.0 < ctl.seconds() / a < 1.01, pos
+    # The wheel over an unclicked slider leaves it alone (page scrolling).
+    assert ctl.slider.focusPolicy() == ctl.field.focusPolicy()
+
+
+def _mouse(widget, kind, x):
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QApplication
+    pos = QPointF(x, widget.height() / 2)
+    held = Qt.MouseButton.NoButton if kind == QEvent.Type.MouseButtonRelease \
+        else Qt.MouseButton.LeftButton
+    QApplication.sendEvent(widget, QMouseEvent(
+        kind, pos, widget.mapToGlobal(pos), Qt.MouseButton.LeftButton,
+        held, Qt.KeyboardModifier.NoModifier))
 
 
 def test_range_controls_never_cross_and_reach_the_voice(app):
-    from sogno_cane.ui.mapping_panel import _range_controls
-    from PySide6.QtWidgets import QSpinBox
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QKeyEvent
+    from PySide6.QtWidgets import QApplication
+    from sogno_cane.ui.cc_controls import RangeControl
     voice = rich_vocabulary_preset().per_channel_cc.voices[0]
-    box = _range_controls(voice, setattr)
-    lo, hi = box.findChildren(QSpinBox)
+    ctl = RangeControl(voice, setattr)
+    lo, hi = ctl.low, ctl.high
     hi.setValue(90)
     lo.setValue(30)
     assert (voice.out_min, voice.out_max) == (30, 90)
+    assert ctl.bar.values() == (30, 90)
     lo.setValue(120)                       # cannot pass the high end
     assert voice.out_min == 90
     hi.setValue(10)                        # nor the high end the low one
     assert voice.out_max == 90
+    # Dragged on the bar: the nearer end follows, and stops at the other.
+    lo.setValue(0)
+    hi.setValue(127)
+    bar = ctl.bar
+    _mouse(bar, QEvent.Type.MouseButtonPress, bar._x(0))
+    _mouse(bar, QEvent.Type.MouseMove, bar._x(30))
+    _mouse(bar, QEvent.Type.MouseButtonRelease, bar._x(30))
+    assert (voice.out_min, voice.out_max) == (30, 127)
+    assert (lo.value(), hi.value()) == (30, 127)
+    _mouse(bar, QEvent.Type.MouseButtonPress, bar._x(127))
+    _mouse(bar, QEvent.Type.MouseMove, bar._x(5))
+    _mouse(bar, QEvent.Type.MouseButtonRelease, bar._x(5))
+    assert (voice.out_min, voice.out_max) == (30, 30)
+    # The arrow keys move the end touched last; Shift by ten.
+    QApplication.sendEvent(bar, QKeyEvent(
+        QEvent.Type.KeyPress, Qt.Key.Key_Right,
+        Qt.KeyboardModifier.ShiftModifier))
+    assert (voice.out_min, voice.out_max) == (30, 40)
+    assert hi.value() == 40
 
 
-def test_mapping_tabs_offer_range_and_fine_smoothing(app):
-    from PySide6.QtWidgets import QDoubleSpinBox, QTabWidget
+def test_cc_tabs_set_morbidezza_and_range_with_the_new_controls(app):
+    from PySide6.QtWidgets import QTabWidget
+    from sogno_cane.ui.cc_controls import RangeControl, SmoothingControl
     from sogno_cane.ui.mapping_panel import MappingPanel
-    panel = MappingPanel(rich_vocabulary_preset(), "T")
+    bundle = rich_vocabulary_preset()
+    panel = MappingPanel(bundle, "T")
     tabs = panel.findChild(QTabWidget)
     names = [tabs.tabText(i) for i in range(tabs.count())]
-    for name in ("CC / CANALE", "COERENZA"):
+    voices = len(bundle.per_channel_cc.voices)
+    for name, count in (("CC / CANALE", voices), ("COERENZA", 1)):
         page = tabs.widget(names.index(name))
-        steps = {round(sb.singleStep(), 2)
-                 for sb in page.findChildren(QDoubleSpinBox)
-                 if sb.maximum() == 0.99}
-        assert steps == {0.01}, name
+        assert len(page.findChildren(SmoothingControl)) == count, name
+        assert len(page.findChildren(RangeControl)) == count, name
 
 
 # --------------------------------------------------------------------------- #

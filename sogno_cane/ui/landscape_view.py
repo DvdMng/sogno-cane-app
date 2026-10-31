@@ -11,9 +11,9 @@ in the trace view, pink and cyan from one channel to the next; going back
 in time every strand turns toward the tone halfway between the two and
 dissolves.
 
-Plain QPainter with numpy projection: no OpenGL module to ship, nothing a
-PC without 3D drivers (or the updater, which replaces only this package)
-would miss.
+Plain QPainter with numpy projection. Since 0.9.8 the app draws the scene
+on the graphics card (``landscape_gl``); this view is what it falls back
+to where OpenGL is missing, and what the offscreen tests see.
 """
 from __future__ import annotations
 
@@ -140,6 +140,8 @@ class _Stream:
 
 class LandscapeView(QWidget):
     """Every visible channel of both beings, receding into the distance."""
+
+    FRAME_MS = FRAME_MS
 
     def __init__(
         self,

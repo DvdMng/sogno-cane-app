@@ -33,8 +33,7 @@ from sogno_cane.io.archive import Archive
 from sogno_cane.settings import Settings
 from sogno_cane.ui.archive_panel import ArchivePanel
 from sogno_cane.ui.device_panel import DevicePanel
-from sogno_cane.ui.landscape_view import FRAME_MS as LANDSCAPE_FRAME_MS
-from sogno_cane.ui.landscape_view import LandscapeView
+from sogno_cane.ui.landscape_gl import make_landscape_view
 from sogno_cane.ui.mapping_panel import MappingPanel
 from sogno_cane.ui.midi_monitor import MidiMonitor
 from sogno_cane.ui.projection import (
@@ -224,8 +223,9 @@ class MainWindow(QMainWindow):
         mon_v.addWidget(self._monitor, 1)
 
         # The combined perspective view of both EEGs: hidden until VISTA 3D,
-        # then it takes the place of the two trace views.
-        self._landscape = LandscapeView(
+        # then it takes the place of the two trace views. On the graphics
+        # card where OpenGL works.
+        self._landscape = make_landscape_view(
             {"human": self._human.profile, "dog": self._dog.profile},
         )
         self._landscape_box = QWidget()
@@ -267,7 +267,7 @@ class MainWindow(QMainWindow):
 
         self._landscape_timer = QTimer(self)
         self._landscape_timer.setTimerType(Qt.TimerType.PreciseTimer)
-        self._landscape_timer.setInterval(LANDSCAPE_FRAME_MS)
+        self._landscape_timer.setInterval(self._landscape.FRAME_MS)
         self._landscape_timer.timeout.connect(self._landscape.advance)
 
         # Wire device events.
@@ -606,9 +606,9 @@ class MainWindow(QMainWindow):
             "    regolano quanto è rada ogni voce;\n"
             "  • 'note length' quanto dura ogni nota (15 ms = trigger per\n"
             "    gli inviluppi, 0 = HOLD legato);\n"
-            "  • nei CC, «uscita» sceglie il tratto del parametro percorso\n"
-            "    (per esempio 30–90) e «morbidezza» quanto il movimento è\n"
-            "    lento, con il tempo di risposta indicato accanto;\n"
+            "  • nei CC, «morbidezza» è il tempo con cui il CC segue il\n"
+            "    segnale (da «nessuna» a 30 s) e «uscita» il tratto del\n"
+            "    parametro percorso, per esempio 30–90;\n"
             "  • 'max silence' fa ripartire una voce rimasta muta troppo a\n"
             "    lungo, così nessun canale MIDI muore.",
         )
@@ -943,7 +943,6 @@ class MainWindow(QMainWindow):
         buttons = self._shape_btns if attr == "shape" else self._order_btns
         if value in buttons and not buttons[value].isChecked():
             buttons[value].setChecked(True)
-        self._landscape._fit_key = None
         self._landscape.update()
 
     def _set_view_3d(self, on: bool) -> None:

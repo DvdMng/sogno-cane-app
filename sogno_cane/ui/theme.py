@@ -267,17 +267,25 @@ QStatusBar {{
     letter-spacing: 1px;
 }}
 
+/* Sliders: a thin track, the part up to the handle in cyan, a narrow pink
+   handle; the CC range bar (ui/cc_controls.py) is drawn the same way. */
 QSlider::groove:horizontal {{
-    background: {BG_PANEL_HEX};
+    background: {BORDER_DIM};
     height: 4px;
     border: none;
+    border-radius: 2px;
+}}
+QSlider::sub-page:horizontal {{
+    background: {ACCENT_CYAN};
+    border-radius: 2px;
 }}
 QSlider::handle:horizontal {{
     background: {ACCENT_PINK};
-    width: 12px;
+    width: 8px;
     margin: -6px 0;
     border-radius: 2px;
 }}
+QSlider::handle:horizontal:hover {{ background: #FF5FA0; }}
 
 QScrollArea, QListWidget, QTextEdit {{
     background-color: rgba(20, 8, 40, 230);

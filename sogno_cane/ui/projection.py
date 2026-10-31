@@ -34,8 +34,7 @@ from PySide6.QtWidgets import (
 
 from sogno_cane.eeg.profiles import DeviceProfile
 from sogno_cane.eeg.unicorn_packet import UnicornPacket
-from sogno_cane.ui.landscape_view import FRAME_MS as LANDSCAPE_FRAME_MS
-from sogno_cane.ui.landscape_view import LandscapeView
+from sogno_cane.ui.landscape_gl import make_landscape_view
 from sogno_cane.ui.theme import PANEL_FILL, TEXT, TEXT_DIM
 from sogno_cane.ui.waveform_widget import WaveformWidget
 
@@ -336,7 +335,7 @@ class ProjectionWindow(QWidget):
         self._profiles = dict(profiles)
         self._settings = settings
         self._visible = {k: list(v) for k, v in (visible or {}).items()}
-        self._view: LandscapeView | None = None
+        self._view = None              # the 3D view, when it is shown
         self._traces: dict[str, WaveformWidget] = {}
         self._box = QVBoxLayout(self)
         self._box.setContentsMargins(0, 0, 0, 0)
@@ -345,7 +344,7 @@ class ProjectionWindow(QWidget):
         self._timer = QTimer(self)
         self._timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._timer.setInterval(
-            LANDSCAPE_FRAME_MS if self._view is not None else _FRAME_MS
+            self._view.FRAME_MS if self._view is not None else _FRAME_MS
         )
         self._timer.timeout.connect(self._on_frame)
         self._frame_prev: float | None = None
@@ -379,14 +378,14 @@ class ProjectionWindow(QWidget):
         self._clear()
         s = self._settings
         if s.content == "3d":
-            view = LandscapeView(self._profiles, seconds=s.seconds,
-                                 background=_BLACK)
+            view = make_landscape_view(self._profiles, seconds=s.seconds,
+                                       background=_BLACK)
             for kind, chans in self._visible.items():
                 view.set_visible_channels(kind, chans)
             self._view = view
             self._apply_live(s)
             self._box.addWidget(view)
-            self._set_frame_ms(LANDSCAPE_FRAME_MS)
+            self._set_frame_ms(view.FRAME_MS)
             return
         kinds = {"human": ["human"], "dog": ["dog"]}.get(
             s.layout, ["human", "dog"])

@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.9.8 — vista 3D sulla scheda grafica, morbidezza dei CC come tempo
+
+- **Vista 3D sulla scheda grafica.** In STUDIO e in proiezione la vista 3D
+  è disegnata con OpenGL:
+  - le onde usano tutti i 250 campioni al secondo, appena ammorbiditi
+    (circa 6 ms), così i momenti densi di un EEG vero, come una raffica di
+    attività rapida o un artefatto muscolare, si vedono sulle curve invece
+    di essere spianati. Il tessuto fra le onde è un po' più calmo (circa
+    10 ms);
+  - il tempo scorre continuo, per frazioni di campione, a 60 fotogrammi al
+    secondo, e ogni campione resta al suo posto mentre si allontana;
+  - con la forma MESH la superficie è la faccia superiore di un volume: dal
+    bordo scendono fino a una base la parete frontale, con UOMO e CANE, e
+    il fianco. Le linee nascoste sono tolte esattamente, a qualunque
+    densità, senza ombreggiature;
+  - un fotogramma costa circa 1 ms di processore, contro 17 della versione
+    precedente: il motore MIDI, che lavora nello stesso processo, non ne
+    risente.
+
+  Dove OpenGL non c'è, l'app usa la vista di prima.
+- **Morbidezza dei CC come tempo.** In CC PER CANALE e in COERENZA la
+  morbidezza è il tempo con cui il CC segue il segnale: un cursore su scala
+  logaritmica, da «nessuna» a 30 s, e accanto il valore, che si può anche
+  scrivere. Prima si regolava con le freccette un coefficiente da 0 a 0,99.
+  Le configurazioni salvate restano valide.
+- **Uscita come barra.** Il tratto del parametro percorso, da 0 a 127, è
+  una barra con le due estremità da trascinare; accanto, i due valori
+  esatti.
+- **Scheda CC / CANALE riordinata.** Ogni canale sta su due righe
+  allineate: banda, numero CC e canale MIDI; poi morbidezza, uscita e
+  inverti. Prima «inverti» finiva attaccato a «morbidezza». I nuovi
+  cursori non cambiano valore se si scorre la pagina con la rotella senza
+  averli cliccati. In COERENZA i campi non sono più stirati per tutta la
+  larghezza.
+
+Test: +5, **317 totali**.
+
 ## 0.9.7 — vista 3D a mesh, pulsanti interi su ogni schermo
 
 - **FORMA MESH.** In alternativa alle linee, la vista 3D unisce le onde
